@@ -388,6 +388,33 @@ def vanilla_likelihood(wi, cwds, dv=None):
 
 # In[ ]:
 
+from numba import jit
+# from autograd.numpy import exp, log
+from numpy import exp, log
+from builtins import zip as izip, range as xrange
+
+nopython = jit(nopython=True)
+
+
+# In[ ]:
+
+@nopython
+def bisect_left(a, v):
+    """Based on bisect module at (commit 1fe0fd9f)
+    cpython/blob/master/Modules%2F_bisectmodule.c#L150 
+    """
+    lo, hi = 0, len(a)
+    while (lo < hi):
+        mid = (lo + hi) // 2
+        if a[mid] < v:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
+# In[ ]:
+
 def unigram(txt, pow=.75):
     "Unigram^(3/4) model"
     cts = Series(Counter(txt))
@@ -409,9 +436,14 @@ def unigram(txt, pow=.75):
     return ctsdf
 
 
-def neg_sampler_pd(uni_dist, K):
+
+
+# In[ ]:
+
+def neg_sampler_pd(xs, K, pow=.75):
+    ug = unigram(xs, pow=pow)
     for seed in count():
-        yield uni_dist.Word.sample(n=K, weights=uni_dist.Prob, random_state=seed)
+        yield ug.Word.sample(n=K, weights=ug.Prob, random_state=seed, replace=True)
         
         
 def neg_sampler_np(xs, K, cache_len=1000, use_seed=False, pow=.75):
@@ -441,288 +473,71 @@ def neg_sampler_np_l(xs, K, cache_len=1000, pow=.75):
             for i in xrange(len(Wds)):
                 yield Wds[i]
     return sample_
-    # for seed in count():
-    #     Wds = nr.choice(a, size=(cache_len, K), p=p)
-    #     for wds in Wds:
-    #         yield wds
 
-
-@nopython
-def sample_(cum_prob, K):
-    while 1:
-        l = []
-        for i in xrange(K):
-            l.append(bisect_left(cum_prob, nr.rand()))
-        yield l #bisect_left(cum_prob, v)
-#             l.append(nr.randint(0, ))
-    
-
-
-# In[ ]:
 
 def neg_sampler_j(xs, K, pow=.75):
     ug = unigram(xs, pow=pow)
     cum_prob = ug.Prob.cumsum() / ug.Prob.sum()
+    
+    @nopython
+    def sample_(cum_prob, K):
+        while 1:
+            l = []
+            for i in xrange(K):
+                l.append(bisect_left(cum_prob, nr.rand()))
+            yield l
+
     return sample_(cum_prob.values, K)
 
 
+# gen = sample_(ug.Cum_prob.values, 8)
+
+# ### Check distributions
+
 # In[ ]:
 
-gen = sample_(ug.Cum_prob.values, 8)
+from sklearn.preprocessing import LabelEncoder
+
+le = LabelEncoder()
+toks = le.fit_transform(all_text.split())
 
 
 # In[ ]:
 
-genj = neg_sampler_j(toki, 8)
-gen = neg_sampler_np(toki, 8)
+genj = neg_sampler_j(toks, 8)
+gennp = neg_sampler_np(toks, 8)
+genp = neg_sampler_pd(toks, 8)
+
+next(genj); next(gennp); next(genp);
 
 
 # In[ ]:
 
 n = 100000
-csj = Series(Counter(x for xs in it.islice(genj, n) for x in xs))
-cs = Series(Counter(x for xs in it.islice(gen, n) for x in xs))
+get_ipython().magic('time csj = Series(Counter(x for xs in it.islice(genj, n) for x in xs))')
+get_ipython().magic('time csnp = Series(Counter(x for xs in it.islice(gennp, n) for x in xs))')
+get_ipython().magic('time csp = Series(Counter(x for xs in it.islice(genp, n // 100) for x in xs))')
 
-
-# In[ ]:
-
-ug = unigram(toki, pow=.75)
-
-
-# In[ ]:
-
-cts = DataFrame({'Numba': csj, 'Numpy': cs}).fillna(0)
+ug = unigram(toks, pow=.75)
+cts = DataFrame({'Numba': csj, 'Numpy': csnp, 'Pandas': csp}).fillna(0)
 probs = cts / cts.sum()
-probs['Probs'] = ug.Prob
-probs['Probs'] /= ug.Prob.sum()
-# probs['Urobs'] = ug.Prob ** .75
-# probs.Urobs /= probs.Urobs.sum()
+probs['Probs'] = ug.Prob / ug.Prob.sum()
 
 
 # In[ ]:
 
-probs[:8]
-
-
-# In[ ]:
-
-def one_line():
-    _, xi = plt.xlim()
-    _, yi = plt.ylim()
+def plot_dist(xcol=None, subplt=None):
+    plt.subplot(subplt)
+    probs.plot(x=xcol, y='Probs', ax=plt.gca(), kind='scatter', alpha=.25)
+    _, xi = plt.xlim(None)
+    _, yi = plt.ylim(0, None)
     end = min(xi, yi)
-    plt.plot([0, end], [0, end])
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-plt.figure(figsize=(16, 10))
-plt.subplot(121)
-probs.plot(x='Numba', y='Probs', ax=plt.gca(), kind='scatter', alpha=.5); one_line()
-plt.subplot(122)
-probs.plot(x='Numpy', y='Probs', ax=plt.gca(), kind='scatter', alpha=.5); one_line()
-
-
-# In[ ]:
-
-ps = np.array([.1, .4, 0, .5])
-cmsm = ps.cumsum()
-DataFrame(cmsm)
-
-
-# In[ ]:
-
-v = nr.rand()
-p = bisect_left(cmsm, v)
-print('{:.2f}  {}'.format(v, p))
-
-
-# In[ ]:
-
-pssamp = Series(Counter(bisect_left(cmsm, nr.rand()) for _ in xrange(10000))) #.reset_index(drop=0)
-pssamp = pssamp / pssamp.sum()
-# pssamp['Prob'] = pssamp[0] / pssamp[0].sum()
-pssamp
-
-
-# In[ ]:
-
-get_ipython().magic('timeit for _ in it.islice(genj, 10000): pass')
-get_ipython().magic('timeit for x in it.islice(gen, 10000): list(x)')
-
-
-# In[ ]:
-
-next(gen), next(genj)
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-1 / ug.Prob.sort_values(ascending=True).iloc[1]
-
-
-# In[ ]:
-
-ug[53:59]
-
-
-# In[ ]:
-
-vc[56]
-
-
-# In[ ]:
-
-ug['Cum_prob'] = ug.Prob.cumsum() / ug.Prob.sum()
-
-
-# In[ ]:
-
-ug[:6]
-
-
-# In[ ]:
-
-@nopython
-def ss(a, v):
-    return np.searchsorted(a, v)
-
-
-# In[ ]:
-
-ss(ug.Cum_prob.values, .5)
-
-
-# In[ ]:
-
-np.searchsorted(ug.Cum_prob, .5)
-
-
-# In[ ]:
-
-def binary_search(a, x, lo=0, hi=None):
-    if hi is None:
-        hi = len(a)
-    while lo < hi:
-        mid = (lo+hi)//2
-        midval = a[mid]
-        if midval < x:
-            lo = mid + 1
-        else: 
-            hi = mid
-
-    return lo
-
-binary_search([1, 2, 3, 4], 1)
-
-
-# In[ ]:
-
-@nopython
-def bisect_left(a, v):
-    """Based on bisect module at (commit 1fe0fd9f)
-    cpython/blob/master/Modules%2F_bisectmodule.c#L150 
-    """
-    lo, hi = 0, len(a)
-    while (lo < hi):
-        mid = (lo + hi) // 2
-        if a[mid] < v:
-            lo = mid + 1
-        else:
-            hi = mid
-    return lo
-
-a = [0, 1, 2, 3]
-# assert bisect_left(a, 0.01) == 1
-# assert bisect_left(a, 0.0) == 0
-bisect_left([0, 1, 2, 3], 0.01)
-
-
-# In[ ]:
-
-rs = nr.random(10000)
-get_ipython().magic('timeit for v in rs: bisect_left(a, v)')
-get_ipython().magic('timeit for v in rs: np.searchsorted(a, v)')
-
-
-# In[ ]:
-
-xs = timeit.repeat("bisect_left(a, nr.random())", "from __main__ import bisect_left, a, nr", number=1000)
-
-
-# In[ ]:
-
-xs
-
-
-# In[ ]:
-
-a = ug.Cum_prob.values
-v = .5
-for _ in xrange(500000):
-    v = nr.random()
-    assert bisect_left(a, v) == np.searchsorted(a, v)
-
-
-# In[ ]:
-
-st = time.time()
-
-def searchsorted(a, v, lo=0, hi=None):
-    if (time.time() - st) > .0005:
-        return
-    hi = (len(a) - 1) if hi is None else hi
-    mid = lo + ((hi - lo) // 2)
-    print(lo, hi, mid, a[mid])
-    if a[mid] > v:
-        return searchsorted(a, v, lo=lo, hi=mid-1)
-    elif a[mid] < v:
-        return searchsorted(a, v, lo=mid+1, hi=hi)
-    return mid
+    plt.plot([0, end], [0, end], alpha=.2)
     
-searchsorted([1, 2, 4, 5], 0)
-
-
-# In[ ]:
-
-np.random.rand()
-
-
-# In[ ]:
-
-ug[-6:]
-
-
-# In[ ]:
-
-toki[:2]
-
-
-# In[ ]:
-
-ngsl = neg_sampler_np_l(toki, cnfe.K)()
-
-
-# In[ ]:
-
-ngs = neg_sampler_np(toki, cnfe.K)
-ngsl = neg_sampler_np_l(toki, cnfe.K)
-get_ipython().magic('time for ns in it.islice(ngs, 500000): pass')
-get_ipython().magic('time for ns in it.islice(ngsl, 500000): pass')
-
-
-# In[ ]:
-
-next(ngsl)
+plt.figure(figsize=(16, 10))
+plot_dist(xcol='Numba', subplt=131)
+plot_dist(xcol='Numpy', subplt=132)
+plot_dist(xcol='Pandas', subplt=133)
 
 
 # #### Neg. sampling log-prob
@@ -774,12 +589,7 @@ next(ngsl)
 
 # In[ ]:
 
-from numba import jit
-# from autograd.numpy import exp, log
-from numpy import exp, log
-from builtins import zip as izip, range as xrange
 
-nopython = jit(nopython=True)
 # @nopython
 def sig(x):
     return 1 / (1 + np.exp(-x))
