@@ -1,0 +1,28 @@
+name: vec
+dependencies:
+- openssl=1.0.2d=0
+- pip
+- pip:
+  - "ipython[notebook]<4"
+  - toolz
+  - snakeviz
+  #- pygraphviz
+  - fuzzywuzzy
+  - autograd
+  - voluptuous
+- python=3.5
+- spacy
+- pandas
+- numexpr
+- gensim
+- seaborn
+- joblib
+- statsmodels
+- scikit-learn
+#- mkl
+
+- numba
+- line_profiler
+
+
+
