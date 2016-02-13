@@ -540,33 +540,6 @@ plot_dist(xcol='Numpy', subplt=132)
 plot_dist(xcol='Pandas', subplt=133)
 
 
-# #### Neg. sampling log-prob
-
-# @jit(nopython=True)
-# def ns_obj(wi: int, win_ix: int, negwds: [int], dv=None):
-#     all_ixs = [wi, win_ix] + list(negwds)
-#     wi_, win_, negs_ = 0, 1, range(2, len(all_ixs))
-#     #print(wi_, win_, negs_)
-#     
-#     def ns_loss(Wall_sub: 'DataFrame[|all_ixs| x N]'):
-#         """This should be called on the subset of the matrix (Win || Wout')
-#         determined by row indices `wi, win_ix, negwds`.
-#         Indexing relevant rows before passing to `logloss` seems to speed up autograd.
-#         """
-#         Win, Wout = Cat.split(Wall_sub)
-#         h = Win[wi_, :]  # ∈ ℝⁿ
-#         vwo = Wout[:, win_]
-#         vwi_neg = Wout[:, negs_]
-#         
-#         return -log(σ(vwo.T @ h)) - np.sum(log(σ(-vwi_neg.T @ h)))
-#         #print( 'h', h.shape, 'vwo', vwo.shape, 'vwi_neg', vwi_neg.shape)
-#         # obj1 = np.log(σ(np.dot(vwo.T, h)))
-#         # obj2 = np.sum(np.log(σ(-np.dot(vwi_neg.T, h))))
-# 
-#         # return -obj1 - obj2
-#     
-#     return ns_loss, all_ixs
-
 # # Train
 # ## Gradient
 
@@ -589,20 +562,11 @@ plot_dist(xcol='Pandas', subplt=133)
 
 # In[ ]:
 
-
 # @nopython
 def sig(x):
     return 1 / (1 + np.exp(-x))
 
-def take(xs, n):
-    return list(it.islice(xs, n))
-
-
-# In[ ]:
-
-# zeros_=memoize(lambda shape: np.zeros(shape))
-# def zeros_(shape):
-#     return np.zeros(shape)
+# take = z.compose(list, it.islice)
 
 
 # In[ ]:
@@ -625,7 +589,6 @@ def get_vecs1(Wall, w_ix: int=0, vo_ix: [int]=1, negsamp_ixs: [int]=None):
 
 def gen_labels(negsamps):
     return [1] + [0] * len(negsamps)
-
 
 
 def ns_loss_grad_dot(h=None, vout=None, label=None):
@@ -658,11 +621,6 @@ def ns_grad(Wsub):
 
 # ns_grad(Wsub)
 # %timeit ns_grad(Wsub)
-
-#     W = wut.init_w(1000, 50, seed=1)
-#     Wsub = W[:8]
-#     W.shape
-#     # ns_grad(Wsub)
 
 # ## Gradient check
 # The following gradient checking functionality based on [the UFLDL tutorial](http://ufldl.stanford.edu/tutorial/supervised/DebuggingGradientChecking/) can be used to ensure that autograd is working as expected. It may be redundant with autograd calculating everything automatically, but I felt better checking manually for a few iterations.
@@ -741,6 +699,27 @@ def approx_grad(W, J=J):
 # %timeit ns_loss_jit(h, vwo, vnegs)
 # %timeit ns_loss_vec_jit(h, vwo, vnegs)
 
+# In[ ]:
+
+import negsamp_grad; reload(negsamp_grad);
+from negsamp_grad import ns_grad as ns_grad_jit
+
+
+# In[ ]:
+
+W = wut.init_w(1000, 50, seed=1)
+Wsub = W[:8]
+W.shape
+# ns_grad(Wsub)
+
+assert np.allclose(ns_grad(Wsub), ns_grad_jit(Wsub))
+assert np.allclose(approx_grad(Wsub), ns_grad_jit(Wsub))
+
+get_ipython().magic('timeit approx_grad(Wsub)')
+get_ipython().magic('timeit ns_grad(Wsub)')
+get_ipython().magic('timeit ns_grad_jit(Wsub)')
+
+
 # ## SGD
 
 # In[ ]:
@@ -787,6 +766,8 @@ cnf = Conf(cnf)
 # In[ ]:
 
 def sliding_window(xs, C=4, start_pos=0):
+    """Iterates through corpus, yielding input word
+    and surrounding context words"""
     winsize = C // 2
     N = len(xs)
     for i, x in enumerate(xs, start_pos):
@@ -812,26 +793,12 @@ def sliding_window(xs, C=4, start_pos=0):
 
 # In[ ]:
 
-import negsamp_grad; reload(negsamp_grad);
-from negsamp_grad import ns_grad as ns_grad_jit
-
-
-# In[ ]:
-
-assert np.allclose(ns_grad(Wsub), ns_grad_jit(Wsub))
-assert np.allclose(approx_grad(Wsub), ns_grad_jit(Wsub))
-
-
-# In[ ]:
-
-a, b = Wsub[0], Wsub[1]
-
-
-# In[ ]:
-
 @nopython
 def grad_norm(Wsub):
-    "First row is input vector, rest are output vectors"
+    """Calculate norm of gradient, where first row
+    is input vector, rest are output vectors. For any row,
+    half of the entries are zeros, which allows a lot of
+    skipping for a faster computation"""
     n = Wsub.shape[1] // 2
     sm = 0
     for i in xrange(n):
@@ -840,6 +807,15 @@ def grad_norm(Wsub):
         for j in xrange(n, 2 * n):
             sm += Wsub[i, j] ** 2
     return np.sqrt(sm)
+
+
+# In[ ]:
+
+grd = ns_grad_jit(Wsub)
+assert np.isclose(grad_norm(grd), np.linalg.norm(grad_norm(grd)))
+
+get_ipython().magic('timeit np.linalg.norm(grad_norm(grd))')
+get_ipython().magic('timeit grad_norm(grd)')
 
 
 # In[ ]:
