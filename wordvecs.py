@@ -847,6 +847,8 @@ assert run_window(sliding_window) == run_window(sliding_window_jit)
 #         # sys.stdout.flush()
 
 
+# ### Norm
+
 # In[ ]:
 
 @nopython
@@ -879,19 +881,11 @@ get_ipython().magic('timeit grad_norm(grd)')
 get_ipython().magic('load_ext line_profiler')
 
 
-# In[ ]:
-
-get_ipython().magic('pinfo z.partition')
-
+# ### Sgd
 
 # In[ ]:
 
-
-
-
-# In[ ]:
-
-def sgd(W=None, corp=None, cf={}, ns_grad=ns_grad, neg_sampler=None):
+def sgd(W=None, corp=None, cf={}, ns_grad=ns_grad, neg_sampler=None, sliding_window=sliding_window):
     # TODO: ensure neg samp != wi
     if not os.path.exists(cf.dir):
         os.mkdir(cf.dir)
@@ -905,7 +899,8 @@ def sgd(W=None, corp=None, cf={}, ns_grad=ns_grad, neg_sampler=None):
     # Win, Wout = Cat.split(W)
     iter_corpus = corp[cf.iter:]
     learning_rates = np.linspace(cf['λ'], cf['λ'] * .1, len(iter_corpus))
-    if neg_sampler is None: neg_sampler = neg_sampler_np(corp, cf.K)    
+    if neg_sampler is None:
+        neg_sampler = (list(x) for x in neg_sampler_np(corp, cf.K))
     iters_ = izip(count(cf.iter),
                   sliding_window(iter_corpus, C=cf.C),
                   z.partition(cf.C, neg_sampler),
@@ -915,9 +910,10 @@ def sgd(W=None, corp=None, cf={}, ns_grad=ns_grad, neg_sampler=None):
 
     for i, (w, cont_), negsamp_lst, eta in iters:
         cont = [x for x in cont_ if x != w] if w in cont_ else cont_
-        for c, negsamps_ in zip(cont, negsamp_lst):
-            negsamps = ([x for x in negsamps_ if x not in {w, c}]
-                        if set([w, c]) & set(negsamps_) else negsamps_)
+        for c, negsamps in zip(cont, negsamp_lst):
+            if set([w, c]) & set(negsamps):
+                negsamps = [x for x in negsamps if x not in {w, c}]
+
             sub_ixs = [w, c] + negsamps # list(negsamps)
             Wsub = W[sub_ixs]
             grad = ns_grad(Wsub)
@@ -949,42 +945,21 @@ def sgd(W=None, corp=None, cf={}, ns_grad=ns_grad, neg_sampler=None):
 # In[ ]:
 
 ngsamp = neg_sampler_j(toki, cnfe.K)
-kw = dict(ns_grad=ns_grad_jit, neg_sampler=ngsamp)
-get_ipython().magic("lprun -T lp5.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=update(cnfe, term={'iters': 10000}), **kw) # ls[:20]")
+fast_opts = dict(ns_grad=ns_grad_jit, neg_sampler=ngsamp, sliding_window=sliding_window_jit)
+get_ipython().magic("lprun -T lp5.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=update(cnfe, term={'iters': 10000}), **fast_opts) # ls[:20]")
 
 
 # In[ ]:
 
-get_ipython().magic("lprun -T lp.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=update(cnfe, term={'iters': 10000}), ns_grad=ns_grad) # ls[:20]")
+sgd(W=We.copy(), corp=toki, cf=update(cnfe, term={'iters': 10000}), **kw)
+
+
+# In[ ]:
+
+get_ipython().magic("lprun -T lp.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=update(cnfe, term={'iters': 10000})) # ls[:20]")
 
 
 # rand_ixs = lambda W, n=8, axis=0: nr.randint(0, W.shape[axis], size=n)
-
-# In[ ]:
-
-@nopython
-def ineg(W, sub_ixs, grad):
-    # for i in xrange(len(grad)):
-    for i, _ in enumerate(grad):
-        W[sub_ixs[i]] -= grad[i]
-        
-def inegp(W, sub_ixs, grad):
-    W[sub_ixs] -= grad
-
-
-# In[ ]:
-
-def test_ineg1(wsub_):
-    wsub = wsub_.copy()
-    wsub -= gr * .1
-    return wsub
-
-def test_ineg2(wsub_):
-    wsub = wsub_.copy()
-    ineg(wsub, gr)
-    wsub -= gr * .1
-    return wsub
-
 
 # In[ ]:
 
@@ -1017,6 +992,25 @@ with open('txt.txt','w') as f:
 We = W.copy()
 
 get_ipython().system('say done')
+
+
+# In[ ]:
+
+for i in range(20):
+    print('Epoch {}'.format(cnfe.epoch))
+    We2, cnfe = sgd(W=We.copy(), corp=toki, cf=update(cnfe, term=dict()), **fast_opts)
+    break
+    
+
+
+# In[ ]:
+
+get_ipython().magic('time sgd(W=We.copy(), corp=toki, cf=update(cnfe, term=dict()))')
+
+
+# In[ ]:
+
+get_ipython().magic('time sgd(W=We.copy(), corp=toki, cf=update(cnfe, term=dict()), **fast_opts)')
 
 
 # In[ ]:
@@ -1060,61 +1054,6 @@ test_ineg1(wsub)
 
 # In[ ]:
 
-wsub.shape
-
-
-# In[ ]:
-
-grad
-
-
-# In[ ]:
-
-weight_normj(grad)
-
-
-# In[ ]:
-
-weight_norm(grad), weight_norm2(grad), weight_normj(grad)
-
-
-# In[ ]:
-
-weight_norm_jit(grad), np.linalg.norm(grad)
-
-
-# In[ ]:
-
-get_ipython().magic('timeit weight_norm(grad)')
-
-
-# In[ ]:
-
-get_ipython().magic('timeit weight_norm2(grad)')
-
-
-# In[ ]:
-
-get_ipython().magic('timeit weight_norm_jit(grad)')
-
-
-# In[ ]:
-
-get_ipython().magic('timeit weight_normj(grad)')
-
-
-# In[ ]:
-
-get_ipython().magic('timeit np.linalg.norm(grad)')
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
 grad, grad2 = grd, grd2
 Wsub = W2[[w, c] + list(negsamps)]
 
@@ -1141,10 +1080,7 @@ DataFrame(grad)
 
 # In[ ]:
 
-for i in range(20):
-    print('Epoch {}'.format(cnfe.epoch))
-    We2, cnfe = sgd(W=We.copy(), corp=toki, cf=update(cnfe, term=dict()))
-    break
+
 
 
 # In[ ]:
