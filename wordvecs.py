@@ -478,16 +478,15 @@ def neg_sampler_np_l(xs, K, cache_len=1000, pow=.75):
 def neg_sampler_j(xs, K, pow=.75):
     ug = unigram(xs, pow=pow)
     cum_prob = ug.Prob.cumsum() / ug.Prob.sum()
-    
-    @nopython
-    def sample_(cum_prob, K):
-        while 1:
-            l = []
-            for i in xrange(K):
-                l.append(bisect_left(cum_prob, nr.rand()))
-            yield l
+    return neg_sampler_j_(cum_prob.values, K)
 
-    return sample_(cum_prob.values, K)
+@nopython
+def neg_sampler_j_(cum_prob, K):
+    while 1:
+        l = []
+        for i in xrange(K):
+            l.append(bisect_left(cum_prob, nr.rand()))
+        yield l
 
 
 # gen = sample_(ug.Cum_prob.values, 8)
@@ -504,6 +503,23 @@ toks = le.fit_transform(all_text.split())
 
 # In[ ]:
 
+get_ipython().magic('timeit genj = neg_sampler_j(toks, 8)')
+get_ipython().magic('timeit gennp = neg_sampler_np(toks, 8)')
+
+
+# In[ ]:
+
+gennp = neg_sampler_np(toks, 8)
+get_ipython().magic('lprun -s -f neg_sampler_np next(gennp)')
+
+
+# In[ ]:
+
+get_ipython().magic('lprun -s -f unigram neg_sampler_j(toks, 8)')
+
+
+# In[ ]:
+
 genj = neg_sampler_j(toks, 8)
 gennp = neg_sampler_np(toks, 8)
 genp = neg_sampler_pd(toks, 8)
@@ -514,9 +530,9 @@ next(genj); next(gennp); next(genp);
 # In[ ]:
 
 n = 100000
-get_ipython().magic('time csj = Series(Counter(x for xs in it.islice(genj, n) for x in xs))')
-get_ipython().magic('time csnp = Series(Counter(x for xs in it.islice(gennp, n) for x in xs))')
 get_ipython().magic('time csp = Series(Counter(x for xs in it.islice(genp, n // 100) for x in xs))')
+get_ipython().magic('time csnp = Series(Counter(x for xs in it.islice(gennp, n) for x in xs))')
+get_ipython().magic('time csj = Series(Counter(x for xs in it.islice(genj, n) for x in xs))')
 
 ug = unigram(toks, pow=.75)
 cts = DataFrame({'Numba': csj, 'Numpy': csnp, 'Pandas': csp}).fillna(0)
@@ -763,17 +779,57 @@ cnf = ut.AttrDict(
 cnf = Conf(cnf)
 
 
+# ### Sliding window
+
 # In[ ]:
 
 def sliding_window(xs, C=4, start_pos=0):
     """Iterates through corpus, yielding input word
     and surrounding context words"""
+    #assert isinstance(xs, list)
     winsize = C // 2
     N = len(xs)
     for i, x in enumerate(xs, start_pos):
         ix1 = max(0, i-winsize)
         ix2 = min(N, i+winsize+1)
         yield x, xs[ix1:i] + xs[i + 1:ix2]
+
+
+@nopython
+def bounds_check_window(i, xs, winsize, N):
+    x = xs[i]
+    ix1 = max(0, i-winsize)
+    ix2 = min(N, i+winsize+1)
+    return x, xs[ix1:i] + xs[i + 1:ix2]
+
+
+@nopython
+def sliding_window_jit(xs, C=4):
+    """Iterates through corpus, yielding input word
+    and surrounding context words"""
+    winsize = C // 2
+    N = len(xs)
+    for i in xrange(winsize):
+        yield bounds_check_window(i, xs, winsize, N)
+    for i in xrange(winsize, N-winsize):
+        context = []
+        for j in xrange(i-winsize, i+winsize+1):
+            if j != i:
+                context.append(xs[j])
+        yield xs[i], context  # xs[i-winsize:i] + xs[i + 1:i+winsize+1]
+    for i in xrange(N-winsize, N):
+        yield bounds_check_window(i, xs, winsize, N)
+
+
+# In[ ]:
+
+samp_toks = list(nr.randint(0, 1e6, size=100005))
+list(sliding_window_jit(samp_toks[:100]))
+run_window = lambda f: list(f(samp_toks))
+
+get_ipython().magic('timeit run_window(sliding_window)')
+get_ipython().magic('timeit run_window(sliding_window_jit)')
+assert run_window(sliding_window) == run_window(sliding_window_jit)
 
 
 # In[ ]:
@@ -825,7 +881,17 @@ get_ipython().magic('load_ext line_profiler')
 
 # In[ ]:
 
-def sgd(W=None, corp=None, cf={}, ns_grad=ns_grad):
+get_ipython().magic('pinfo z.partition')
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+def sgd(W=None, corp=None, cf={}, ns_grad=ns_grad, neg_sampler=None):
     # TODO: ensure neg samp != wi
     if not os.path.exists(cf.dir):
         os.mkdir(cf.dir)
@@ -839,9 +905,10 @@ def sgd(W=None, corp=None, cf={}, ns_grad=ns_grad):
     # Win, Wout = Cat.split(W)
     iter_corpus = corp[cf.iter:]
     learning_rates = np.linspace(cf['λ'], cf['λ'] * .1, len(iter_corpus))
+    if neg_sampler is None: neg_sampler = neg_sampler_np(corp, cf.K)    
     iters_ = izip(count(cf.iter),
                   sliding_window(iter_corpus, C=cf.C),
-                  z.partition(cf.C, neg_sampler_np(corp, cf.K)),
+                  z.partition(cf.C, neg_sampler),
                   learning_rates,
                  )
     iters = ut.timeloop(iters_, **cf.term)
@@ -850,7 +917,7 @@ def sgd(W=None, corp=None, cf={}, ns_grad=ns_grad):
         cont = [x for x in cont_ if x != w] if w in cont_ else cont_
         for c, negsamps_ in zip(cont, negsamp_lst):
             negsamps = ([x for x in negsamps_ if x not in {w, c}]
-                        if set([w, c]) & set(negsamps_) else list(negsamps_))
+                        if set([w, c]) & set(negsamps_) else negsamps_)
             sub_ixs = [w, c] + negsamps # list(negsamps)
             Wsub = W[sub_ixs]
             grad = ns_grad(Wsub)
@@ -881,12 +948,14 @@ def sgd(W=None, corp=None, cf={}, ns_grad=ns_grad):
 
 # In[ ]:
 
-get_ipython().magic("lprun -T lp.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=update(cnfe, term={'iters': 10000}), ns_grad=ns_grad) # ls[:20]")
+ngsamp = neg_sampler_j(toki, cnfe.K)
+kw = dict(ns_grad=ns_grad_jit, neg_sampler=ngsamp)
+get_ipython().magic("lprun -T lp5.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=update(cnfe, term={'iters': 10000}), **kw) # ls[:20]")
 
 
 # In[ ]:
 
-get_ipython().magic("lprun -T lp3.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=update(cnfe, term={'iters': 10000}), ns_grad=ns_grad_jit) # ls[:20]")
+get_ipython().magic("lprun -T lp.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=update(cnfe, term={'iters': 10000}), ns_grad=ns_grad) # ls[:20]")
 
 
 # rand_ixs = lambda W, n=8, axis=0: nr.randint(0, W.shape[axis], size=n)
@@ -929,6 +998,25 @@ gr = ns_grad(w1[ixs])
 
 get_ipython().magic('timeit ineg(w1, ixs, gr)')
 get_ipython().magic('timeit inegp(w2, ixs, gr)')
+
+
+# In[ ]:
+
+cnfe = update(cnf, C=4, iter=0, term=dict(), N=100, λ=.5, dir='cache/v12', epoch=0)
+
+# tks = np.array(all_text.split())
+stoks, dropped = get_subsample(toks, thresh=THRESH)
+# assert 'Albus_Dumbledore' in stoks
+dv = WordVectorizer().fit(stoks)
+toki = [dv.vocabulary_[x] for x in stoks]
+vc = dv.feature_names_
+W = wut.init_w(len(vc), cnfe.N, seed=1)
+with open('txt.txt','w') as f:
+    f.write('\n'.join(stoks))
+    
+We = W.copy()
+
+get_ipython().system('say done')
 
 
 # In[ ]:
@@ -1168,27 +1256,12 @@ get_ipython().magic("prun -qD prof.txt sgd(W=W.copy(), corp=toki, cf=update(cnf,
 
 # In[ ]:
 
-cnfe = update(cnf, C=4, iter=0, term=dict(), N=100, λ=.5, dir='cache/v12', epoch=0)
 
-
-# In[ ]:
-
-# tks = np.array(all_text.split())
-stoks, dropped = get_subsample(toks, thresh=THRESH)
-# assert 'Albus_Dumbledore' in stoks
-dv = WordVectorizer().fit(stoks)
-toki = [dv.vocabulary_[x] for x in stoks]
-vc = dv.feature_names_
-W = wut.init_w(len(vc), cnfe.N, seed=1)
-with open('txt.txt','w') as f:
-    f.write('\n'.join(stoks))
-    
-We = W.copy()
 
 
 # In[ ]:
 
-get_ipython().system('say done')
+
 
 
 # We = pd.read_csv('cache/v9/n15_e26.csv', index_col=0).values
