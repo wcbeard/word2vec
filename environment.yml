@@ -12,6 +12,7 @@ dependencies:
   - voluptuous
 - python=3.5
 - spacy
+- nltk
 - pandas
 - numexpr
 - gensim

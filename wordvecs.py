@@ -329,7 +329,7 @@ def get_subsample_prob(txt, thresh=.001):
     return np.clip(p, 0, 1)
 
 
-def get_subsample(txt, thresh=.001):
+def get_subsample(txt, thresh=.001) -> (['keep'], ['drop']):
     """
     Drop words with frequency above given threshold according to frequency.
     From "Distributed Representations of Words and Phrases and their Compositionality"
@@ -757,7 +757,7 @@ def ping():
 # In[ ]:
 
 Conf = Schema(dict(
-        λ=Num,
+        eta=Num, min_eta=Num,
         norm=Num,  accumsec=Num, norms=Dict({int: float}),  gradnorms=Dict({int: float}),
         N=int, K=int, term={}, iter=int, epoch=int, dir=str,
         C=even,  # full window size; must be an even number
@@ -769,7 +769,7 @@ Conf = orig_type(Conf)
 # In[ ]:
 
 cnf = ut.AttrDict(
-    λ=.5, norm=0, accumsec=0, norms={}, gradnorms={}, N=100,
+    eta=.1, min_eta=.0001, norm=0, accumsec=0, norms={}, gradnorms={}, N=100,
     C=4, K=6, iter=0, thresh=15, epoch=0,
     term=dict(iters=None,
               secs=10
@@ -796,11 +796,13 @@ def sliding_window(xs, C=4, start_pos=0):
 
 
 @nopython
-def bounds_check_window(i, xs, winsize, N):
+def bounds_check_window(i, xs: [int], winsize, N):
     x = xs[i]
     ix1 = max(0, i-winsize)
     ix2 = min(N, i+winsize+1)
     return x, xs[ix1:i] + xs[i + 1:ix2]
+
+
 
 
 @nopython
@@ -819,32 +821,62 @@ def sliding_window_jit(xs, C=4):
         yield xs[i], context  # xs[i-winsize:i] + xs[i + 1:i+winsize+1]
     for i in xrange(N-winsize, N):
         yield bounds_check_window(i, xs, winsize, N)
+      
+@nopython
+def concat(a, b):
+    na = len(a)
+    n = na + len(b)
+    c = np.empty(n, dtype=a.dtype)
+    for i in xrange(na):
+        c[i] = a[i]
+    for i in xrange(len(b)):
+        c[i + na] = b[i]
+    return c
 
+@nopython
+def bounds_check_window_arr(i, xs: np.array, winsize, N):
+    x = xs[i]
+    ix1 = max(0, i-winsize)
+    ix2 = min(N, i+winsize+1)
+    return x, concat(xs[ix1:i], xs[i + 1:ix2])
+
+@nopython
+def sliding_window_jit_arr(xs, C=4):
+    """Iterates through corpus, yielding input word
+    and surrounding context words"""
+    winsize = C // 2
+    N = len(xs)
+    for i in xrange(winsize):
+        yield bounds_check_window_arr(i, xs, winsize, N)
+    for i in xrange(winsize, N-winsize):
+        context = np.empty(C, dtype=np.int64)
+        for ci in xrange(winsize):
+            context[ci] = xs[i - winsize + ci]
+            context[winsize + ci] = xs[i + 1 + ci]
+#             if j != i:
+#                 context[ci] = xs[i - winsize + ci]
+        yield xs[i], context  # xs[i-winsize:i] + xs[i + 1:i+winsize+1]
+    for i in xrange(N-winsize, N):
+        yield bounds_check_window_arr(i, xs, winsize, N)
+
+
+# bounds_check_window(1, toks, 4, len(toks))
+# bounds_check_window_arr(0, toks, 4, len(toks))
+# bounds_check_window(i, xs, winsize, N)
+# 
+# s = sliding_window_jit_arr(samp_toks)
 
 # In[ ]:
 
-samp_toks = list(nr.randint(0, 1e6, size=100005))
-list(sliding_window_jit(samp_toks[:100]))
-run_window = lambda f: list(f(samp_toks))
+samp_toks = nr.randint(0, 1e6, size=100005)
+samp_toksl = list(samp_toks)
+list(sliding_window_jit(samp_toksl[:100]))
+run_window = lambda f, toks=samp_toksl: list(f(toks))
 
 get_ipython().magic('timeit run_window(sliding_window)')
 get_ipython().magic('timeit run_window(sliding_window_jit)')
-assert run_window(sliding_window) == run_window(sliding_window_jit)
-
-
-# In[ ]:
-
-#         if i % 1000 == 0:
-#             _gn = gradnorms[i + gradnormax] = np.linalg.norm(grad)
-#             maxnorms.append(_gn)
-#             norms[i + normax] = np.linalg.norm(W)
-#             if max(maxnorms) > cf.thresh:
-#                 cf['λ'] *= 2 / 3
-#                 print('Setting λ: {:.2f}'.format(cf['λ']))
-#                 maxnorms.clear()
-# #             else:
-# #                 print('{:.1f}'.format(max(maxnorms)), end='; ')
-#         # sys.stdout.flush()
+get_ipython().magic('timeit run_window(sliding_window_jit_arr, toks=samp_toks)')
+# assert run_window(sliding_window) == run_window(sliding_window_jit) == run_window(sliding_window_jit_arr)
 
 
 # ### Norm
@@ -885,7 +917,7 @@ get_ipython().magic('load_ext line_profiler')
 
 # In[ ]:
 
-def sgd(W=None, corp=None, cf={}, ns_grad=ns_grad, neg_sampler=None, sliding_window=sliding_window):
+def sgd(W=None, corp=None, cf={}, ns_grad=ns_grad, neg_sampler=None, vc=None, sliding_window=sliding_window):
     # TODO: ensure neg samp != wi
     if not os.path.exists(cf.dir):
         os.mkdir(cf.dir)
@@ -898,9 +930,8 @@ def sgd(W=None, corp=None, cf={}, ns_grad=ns_grad, neg_sampler=None, sliding_win
     # global Win, Wout, w, cont, negsamp_lst, c, negsamps, sub_ixs
     # Win, Wout = Cat.split(W)
     iter_corpus = corp[cf.iter:]
-    learning_rates = np.linspace(cf['λ'], cf['λ'] * .1, len(iter_corpus))
-    if neg_sampler is None:
-        neg_sampler = (list(x) for x in neg_sampler_np(corp, cf.K))
+    learning_rates = np.linspace(cf.eta, cf.min_eta, len(iter_corpus))
+    assert neg_sampler is not None, "Give me a negative sampler!"
     iters_ = izip(count(cf.iter),
                   sliding_window(iter_corpus, C=cf.C),
                   z.partition(cf.C, neg_sampler),
@@ -977,7 +1008,11 @@ get_ipython().magic('timeit inegp(w2, ixs, gr)')
 
 # In[ ]:
 
-cnfe = update(cnf, C=4, iter=0, term=dict(), N=100, λ=.5, dir='cache/v12', epoch=0)
+cnfe = update(cnf, C=4, iter=0, term=dict(), N=100,  dir='cache/v12', epoch=0)
+
+
+# In[ ]:
+
 
 # tks = np.array(all_text.split())
 stoks, dropped = get_subsample(toks, thresh=THRESH)
@@ -996,11 +1031,247 @@ get_ipython().system('say done')
 
 # In[ ]:
 
+brown.s
+
+
+# In[ ]:
+
 for i in range(20):
     print('Epoch {}'.format(cnfe.epoch))
     We2, cnfe = sgd(W=We.copy(), corp=toki, cf=update(cnfe, term=dict()), **fast_opts)
     break
     
+
+
+# ## Corpus
+
+# In[ ]:
+
+import nltk; reload(nltk)
+from nltk.corpus import brown, reuters
+from gensim.models import Word2Vec
+
+
+# In[ ]:
+
+cnfe = update(cnf, C=4, iter=0, term=dict(), N=100, dir='cache/v12', epoch=0)
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+Word2Vec(self, sentences=None , size=cnfe.N, alpha=0.025, window=cnfe.C,
+         min_count=5, workers=1, min_alpha=0.0001, sg=1, negative=cnfe.K, iter=1, null_word=0, trim_rule=None)
+
+
+# In[ ]:
+
+# %time gmod = Word2Vec(brown.sents())
+get_ipython().magic('time gmod = Word2Vec(brown.sents())')
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+neg_sampler_np(xs, K, cache_len=1000, use_seed=False, pow=0.75)
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+len(set(brown.words()))
+
+
+# In[ ]:
+
+from sklearn.preprocessing import LabelEncoder
+
+def to_ints(wds):
+    le = LabelEncoder().fit(wds)
+    ints = le.transform(wds)
+    return list(ints), le
+
+def to_list_gen(f):
+    @wraps(f)
+    def f2(*a, **kw):
+        gen = f(*a, **kw)
+        return (list(x) for x in gen)
+    return f2
+
+def tokenize(wds):
+    alpha_re = re.compile(r'[A-Za-z]')
+    return [w for w in wds if alpha_re.search(w)]
+
+def prune_words(wds, keep_n_words=30000):
+    if keep_n_words is None:
+        return wds
+    cts = Counter(wds)
+    cts2 = set(sorted(cts, key=cts.get, reverse=True)[:keep_n_words])
+    return [w for w in wds if w in cts2]
+
+# c2 = prune_words(brown.words(), keep_n_words=10)
+
+
+# In[ ]:
+
+toks, le = to_ints(nopunct)
+
+
+# In[ ]:
+
+class word2vec(object):
+    def __init__(self, words, cnf, neg_sampler=to_list_gen(neg_sampler_np), keep_n_words=30000, **sgd_kwds):
+        text = prune_words(tokenize(words), keep_n_words=keep_n_words)
+        prune_words(brown.words(), keep_n_words=10)
+        
+        self.text = text
+        self.toks, self.le = to_ints(self.text)
+        self.cnf = update(cnf, term={})
+        self.W = wut.init_w(len(self.le.classes_), cnf.N)
+        self.sgd_kwds = sgd_kwds
+        self.neg_sampler = neg_sampler(self.toks, cnf.K)
+        
+    def run(self, term=None, **sgd_kwds):
+        cnf = self.cnf
+        if term:
+            cnf = update(cnf, term=term)
+        print(cnf)
+        res = sgd(W=self.W.copy(), corp=self.toks, neg_sampler=self.neg_sampler,
+                  cf=cnf, vc=self.le.classes_, **z.merge(self.sgd_kwds, sgd_kwds))
+        self.W, self.cnf = res
+
+modf = word2vec(brown.words(), cnfe, neg_sampler=neg_sampler_j)
+
+
+# In[ ]:
+
+with open('cache/txt.txt','w') as f:
+    f.write('\n'.join(modf.text))
+
+
+# In[ ]:
+
+fast_opts = dict(ns_grad=ns_grad_jit, sliding_window=sliding_window_jit)
+
+
+# In[ ]:
+
+partition
+
+
+# In[ ]:
+
+get_ipython().magic("time modf.run(term={}, **fast_opts)  # 'iters': 10000")
+get_ipython().system('say done')
+
+
+# In[ ]:
+
+W2 = modf.W.copy()
+
+
+# In[ ]:
+
+cnfs = update(cnfe, dir='cache/slow')
+mod = word2vec(brown.words(), cnfs)
+
+
+# In[ ]:
+
+ls src/
+
+
+# In[ ]:
+
+get_ipython().magic("time mod.run(term={})  # 'iters': 10000")
+
+
+# ## Hyperparam search
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+Series(list(cts.values())).value_counts(normalize=1)
+
+
+# In[ ]:
+
+modf.W.shape
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+z.merge({2: 4}, {2: 3})
+
+
+# In[ ]:
+
+def f(**kw):
+    print(kw)
+    
+f(a=2, **{'a': 3})
+
+
+# In[ ]:
+
+# neg_sampler=ngsamp, 
+
+
+# In[ ]:
+
+ngsamp = neg_sampler_j(toki, cnfe.K)
+
+
+# In[ ]:
+
+
+get_ipython().magic("lprun -T lp5.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=update(cnfe, term={'iters': 10000}), **fast_opts) # ls[:20]")
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+cnfe.
+
+
+# In[ ]:
+
+gmod
+
+
+# In[ ]:
+
+gmod.most_similar('politician')
+
+
+# In[ ]:
+
+brown.sents()
 
 
 # In[ ]:
