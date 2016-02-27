@@ -1,11 +1,11 @@
 import builtins
-from collections import Counter
+from collections import Counter, OrderedDict
 from functools import wraps
 from itertools import repeat, islice
 from sklearn.feature_extraction import DictVectorizer
 import numpy as np
 import numpy.random as nr
-from pandas import Series, DataFrame
+from pandas import Series, DataFrame, Index
 from typing import Union, Iterable, Dict, List
 
 import toolz.curried as z
@@ -167,11 +167,55 @@ def inspect_freq_thresh(txt: [str]):
     return freqdf
 
 
-def cdist(v: '(n,)', M: '(n, m)'):
+# Closest word
+def cdist(v: '(n,)', M: '(n, m)', mnorms=None):
     "Cosine distance"
-    mnorms = np.linalg.norm(M, axis=1)
+    if mnorms is None:
+        mnorms = np.linalg.norm(M, axis=1)
     norms = np.linalg.norm(v) * mnorms
     return 1 - (v @ M.T) / norms
+
+
+def get_closest(wd='death', W=None, Wnorm=None):
+    if isinstance(wd, str):
+        wvec = W.ix[wd]
+    else:
+        wvec = wd
+    dst = cdist(wvec, W, mnorms=Wnorm)
+    return dst.idxmin()
+
+
+def get_closestn(wd='death', n=20, W=None, Wnorm=None, freq=None, exclude=[], just_word=False):
+    if Wnorm is None:
+        Wnorm = np.ones(len(W))
+    if isinstance(wd, str):
+        wvec = W.ix[wd]
+    else:
+        wvec = wd
+    dst = cdist(wvec, W, mnorms=Wnorm)
+    # if exclude:
+    #     dst = dst[~W.index.isin(exclude)]
+    if n == 1 and just_word:
+        r = dst.idxmin()
+        if r not in exclude:
+            return Index([r])
+    closests = dst.sort_values(ascending=True)[:n + len(exclude)]
+    closests = closests[~closests.index.isin(exclude)][:n]
+    if just_word:
+        return closests.index
+    cvecs = W.ix[closests.index]
+    df = DataFrame(OrderedDict([  #  ('Freq', freq.ix[dv.wds(closests)]),
+                                ('Dist', dst.ix[closests.index]),
+                                ('Size', np.diag(cvecs @ cvecs.T)),
+            ]))
+    if freq is not None:
+        df['Freq'] = closests.index.map(freq.get)
+    df.Dist = df.Dist.map('{:.2f}'.format)
+    df.Size = df.Size.map('{:.1f}'.format)
+    # df.Freq = df.Freq.round()
+
+    # get_closestn(W=w)
+    return df.reset_index(drop=0).rename(columns={'index': 'Word'})
 
 
 # Config helpers

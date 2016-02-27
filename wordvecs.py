@@ -9,317 +9,30 @@ get_ipython().run_cell_magic('javascript', '', "var csc = IPython.keyboard_manag
 # In[ ]:
 
 from project_imports import *
-
+import utils as ut; reload(ut);
 get_ipython().magic('matplotlib inline')
 
-cachedir = 'cache/'
-memory = Memory(cachedir=cachedir, verbose=0)
-
 
 # In[ ]:
 
-import time
-import utils as ut; reload(ut);
+# import scipy as sp
+# sp.sparse.csr_matrix.__matmul__ = sp.sparse.csr_matrix.dot
+# import numpy as np
 
-
-# In[ ]:
-
-bksall = ut.BookSeries(7)
-all_text = bksall.txt
-
-
-# - [Word-Vectors](#Word-Vectors)
-
-# In[ ]:
-
-from spacy.en import English
-get_ipython().magic('time nlp = English()')
-
-
-# In[ ]:
-
-get_ipython().run_cell_magic('time', '', 'bktksall = {i: nlp(bktxt, tag=True, parse=True, entity=True)\n            for i, bktxt in bksall.txts.items()}')
-
-
-# In[ ]:
-
-get_ipython().magic('time atks = nlp(bksall.txt)')
-
-
-# # Get named entity phrases
-
-# phrase_ents = Series(Counter([e.orth_ for e in ltoks.ents if e.label in ent_nums and ' ' in e.orth_])).sort_values(ascending=0)
-# ent_cands = phrase_ents[phrase_ents > 2].sort_index()
-# ent_cands
-
-# ent_cnt = Series(Counter([(e.label_, e.orth_) for e in atks.ents]))
-# ent_cnt.reset_index(drop=0).to_csv('/tmp/ents.csv')
-
-# In[ ]:
-
-ent_lab2num = {e.label_: e.label for e in atks.ents}
-ent_nums = sorted({ent_lab2num[lab] for lab in 'EVENT FAC GPE ORG PERSON WORK_OF_ART'.split()})
-
-
-# %%time
-# phrase_ents_low = (Series(Counter(
-#             [e.orth_.lower() for e in atks.ents if e.label in ent_nums
-#              and ' ' in e.orth_])).sort_values(ascending=0))
-
-# In[ ]:
-
-get_ipython().run_cell_magic('time', '', "phrase_ents = (Series(Counter(\n            [e.orth_ for e in atks.ents if e.label in ent_nums\n             and ' ' in e.orth_])).sort_values(ascending=0)).reset_index(drop=0)\nphrase_ents.columns = ['Phrase', 'Count']")
-
-
-# phrase_ents2 = (Series(Counter(
-#             [e.orth_ for e in atks.ents if e.label in ent_nums
-#              and ' ' in e.orth_])).sort_values(ascending=0)).reset_index(drop=0)
-
-# In[ ]:
-
-def rep_phrase(s):
-    """Pass string as a phrase to replace with words joined by
-    underscores. If returns None, then don't replace it. Else,
-    the returned string is ok to replace.
-    >>> rep_phrase('the Harry Potter') == 'Harry Potter'
-    """
-    if isinstance(s, str):
-        wds = s.split()
-    else:
-        wds = s
-    if len(wds) < 2:
-        return
-    if wds[0][0].islower():
-        return rep_phrase(wds[1:])
-    if wds[-1][0].islower():
-        return rep_phrase(wds[:-1])
-    return ' '.join(wds)
-    
-    
-def clean_hyphen(s):
-    "Keep hyphens that separate words, discard rest"
-    surr_hyph_re = re.compile(r"(?<=[A-Za-z])-(?=[A-Za-z])")
-    sentinel = b'\uF5DC'.decode('unicode_escape')
-    s = surr_hyph_re.sub(sentinel, s)
-    s = re.sub('-', '', s)
-    s = re.sub(sentinel, '-', s)
-    return s
-
-
-def tokenize(s: str=bksall.txt):
-    split_re = re.compile(r"[^A-Za-z-\d_']")
-    return np.array(filter(bool, [t.strip("'") for t in split_re.split(clean_hyphen(s))]))
-
-
-def multi_replace(pairs, text):
-    return reduce(lambda accum, x: accum.replace(x[0], x[1]),  pairs, text)
-
-
-def multi_replace(dct, text):
-    """Replace occurrence of keys in `text` with corresponding values,
-    longest keys first"""
-    pairs = sorted(dct.items(), key=lambda x: len(x[0]), reverse=True)
-    return reduce(lambda accum, x: accum.replace(x[0], x[1]), pairs, text)
-
-# test_rep_phrase()
-
-
-# In[ ]:
-
-def test_rep_phrase():
-    assert rep_phrase('Harry Potter') == 'Harry Potter'
-    assert rep_phrase('the Harry Potter') == 'Harry Potter'
-    assert rep_phrase('Harry Potter.') == 'Harry Potter.'
-    assert rep_phrase("Harry Potter's toy") == "Harry Potter's"
-    assert rep_phrase("the Potter") is None
-    
-def test_tokenize():
-    assert clean_hyphen('whoops-a-daisy') == 'whoops-a-daisy'
-    assert clean_hyphen('whoops- a-daisy') == 'whoops a-daisy'
-    assert clean_hyphen('whoops-a -daisy') == 'whoops-a daisy'
-    assert clean_hyphen('whoops-a -daisy') == 'whoops-a daisy'
-    assert clean_hyphen(' -a a- -a- a-a a-a-a ') == ' a a a a-a a-a-a '
-    assert all(tokenize('whoops-a-daisy, -there- -it goes-') == ['whoops-a-daisy', 'there', 'it', 'goes'])
-    
-test_rep_phrase()
-test_tokenize()
-
-
-# In[ ]:
-
-phrases = (phrase_ents.assign(Clean=lambda x: x.Phrase.map(clean_hyphen))
-           .query('Count >= 7 & Clean == Phrase').Phrase)  # .map(rep_phrase).dropna()
-phrase2wds = OrderedDict([(w, ut.phrase2wd(w)) for w in phrases])
-
-
-# extras2 = [h for i, h in enumerate(hss2) if h not in s1]
-# print(len(extras2))
-# extras2
-# extras1 = [h for i, h in enumerate(hss) if h not in s2]
-# print(len(extras1))
-# extras1
-# a2 = clean_hyphen(all_text)
-# hs2 = hyph_re.findall(a2)
-# hss2 = filter(surr_hyph_re.findall, hs2)
-# 
-# phrase_ents
-
-# phrase_ents
-# phrase_ents[phrase_ents.Phrase.str.startswith('Pro')]
-# n = 1040000
-# ' '.join(toks[n:n+1000])
-# n = 5009000
-# print(phrased_text[n:n+9500])
-# phrase_ents.value_counts(normalize=0)
-# 
-# phrase_ents[phrase_ents ]
-
-# # Get Bigram Phrases
-
-# In[ ]:
-
-# def get_big_scores(big_dct, uni_dct, δ=2):
-#     global w1, w2
-#     return {(w1, w2): (cts - δ) / ((uni_dct[w1] or print('w1', w1)) *
-#                          (uni_dct[w2] or print('w2', w2)))
-#             for w1, w1dct in big_dct.items()
-#             for w2, cts in w1dct.items()}
-
-def get_big_scores(big_dct, uni_dct, δ=2):
-    #global w1, w2
-    dct = {}
-    for w1, w1dct in big_dct.items():
-        for w2, cts in w1dct.items():
-            assert uni_dct[w1] or uni_dct[w2], ("Some word isn't "
-                                                "accounted for in unigrams")
-            dct[(w1, w2)] = (cts - δ) / (uni_dct[w1] * uni_dct[w2])
-    return dct
-
-def get_bigrams(toks, δ=9):
-    bigd = defaultdict(lambda: defaultdict(int))
-    for w1, w2 in builtins.zip(toks, toks[1:]):
-        if (w1 == 'va') or (w2 == 'va'):
-            print('w1', w1)
-            print('w2', w2)
-        bigd[w1][w2] += 1
-
-    unid = defaultdict(int)
-    unid.update({k: sum(v.values()) for k, v in bigd.items()}.items() | {toks[-1]: 1}.items())
-    
-    big_scores = get_big_scores(bigd, unid, δ=δ)
-    
-    bigdf = (Series(big_scores).reset_index(drop=0).sort_values(0, ascending=0)
-     .rename(columns={'level_0': 'W1', 'level_1': 'W2', 0: 'Score'})
-     .reset_index(drop=1)
-    )
-    
-    minerva = bigdf.query('W1 == "Professor" & W2 == "McGonagall"').Score.iloc[0]
-    bigdf = bigdf.query('Score >= @minerva')
-    
-    bigdf['From'] = bigdf.W1 + ' ' + bigdf.W2
-    bigdf['From'] = bigdf.W1 + '_' + bigdf.W2
-    return bigdf[bigdf.W1.map(iscap) & bigdf.W2.map(iscap)
-                 & ~bigdf.W1.str.isupper() & ~bigdf.W2.str.isupper()]
-#                  & (bigdf.W1.str.len() > 1) & (bigdf.W2.str.len() > 1)]
-
-def filter_phrases(bigrams: {' ': '_'}, phrases: {' ': '_'}):
-    phrases_ = set(phrases.values())
-    is_subset = lambda x: x not in phrases_ and not any(x in ent for ent in phrases_)
-    return z.valfilter(is_subset, bigrams)
-
-
-iscap = lambda x: x[0].isupper()
-
-
-# In[ ]:
-
-bigdf = get_bigrams(tokenize(all_text), δ=9)
-bigram_rep = dict(zip(bigdf.W1 + ' ' + bigdf.W2, bigdf.W1 + '_' + bigdf.W2))
-bigram_rep = filter_phrases(bigram_rep, phrase2wds)
-bigram_rep.update({
-        w: '_'.join(w.split()) for w in
-        'Mrs Norris;Every Flavor Beans;Expecto Patronum;Boy Who Lived'.split(';')})
-bigram_rep = z.keymap(lambda x: x.replace('Mrs ', 'Mrs. '), bigram_rep)
-punct_replace = {"St Mungo's": "St. Mungo's"}
-bigram_rep = z.keymap(lambda x: punct_replace.get(x, x), bigram_rep)
-bigram_rep = z.keyfilter(lambda x: x not in 'Every Flavor;Flavor Beans;Boy Who;Who Lived'.split(';'),
-                         bigram_rep )
-
-
-# ## Phrasify
-# 
-# revdict = lambda d: {v: k for k, v in d.items()}
-# rbigram_rep = revdict(bigram_rep)
-# rphrase2wds = revdict(phrase2wds)
-
-# In[ ]:
-
-with open('src/name2phrase.txt', 'r') as f:
-    name2phrase = dict(map(str.split, f.read().splitlines()))
-
-
-# In[ ]:
-
-# %%time 
-to_replace = z.merge(phrase2wds, bigram_rep)
-multicase_phrases = ut.get_multi_case(OrderedDict(sorted(to_replace.items(), key=lambda x: -len(x[0]))), all_text)
-to_replace.update(multicase_phrases)
-phrased_text = multi_replace(to_replace, all_text)
-# phrased_text = multi_replace(phrase2wds.items(), all_text)
-toks = tokenize(phrased_text)
-toks = np.array([name2phrase.get(t, t) for t in toks])
-
-
-# In[ ]:
-
-toksl = {t.lower() for t in toks}
-diffs = {t.lower() for t in z.valmap(lambda t: name2phrase.get(t, t), to_replace).values()} - toksl
-diffs
-
-
-# toks = tokenize(phrased_text)
-# 
-# for t in toks:
-#     if 'Vernon_Dursley' in t:
-#         print(t)
-
-# casedat = (DataFrame([(k, len(set(ut.find_all(all_text, k))),
-#                        len(set(ut.find_all(lt, k.lower()))))
-#                       for k, v in to_replace.items()], columns=['Word', 'Case', 'Nocase'])
-#            .query('Case != Nocase').assign(Ratio = lambda x: x.eval('Case / Nocase'))
-#            .sort_values('Ratio', ascending=True).reset_index(drop=1)
-#           )
-# 
-#     # casedat['Ratio'] = casedat.eval('Case / Nocase')
 
 # # Word Vectors
 
 # In[ ]:
 
-import scipy as sp
-sp.sparse.csr_matrix.__matmul__ = sp.sparse.csr_matrix.dot
-# import sklearn
-
-# import autograd.numpy as np
-# from autograd import grad
-import numpy as np
-# %load_ext line_profiler
-
-
-# In[ ]:
-
 import wordvec_utils as wut; reload(wut);
-import utils as ut; reload(ut);
-import test; reload(test);
-from wordvec_utils import Cat, WordVectorizer, get_rand_wins, get_wins
-from voluptuous import Schema
+from wordvec_utils import Cat, WordVectorizer
+from voluptuous import Schema, ALLOW_EXTRA
 
 
 # ## Subsample
 
 # In[ ]:
 
-# THRESH = 0.0014
 THRESH = 0.15
 
 def get_subsample_prob(txt, thresh=.001):
@@ -434,8 +147,6 @@ def unigram(txt, pow=.75):
     if int_txt:
         assert (ctsdf.Word == ctsdf.index).all()
     return ctsdf
-
-
 
 
 # In[ ]:
@@ -748,7 +459,6 @@ from wordvec_utils import Dict, Num, even, orig_type, update
 import utils as ut; reload(ut);
 from voluptuous import ALLOW_EXTRA
 from collections import deque
-import os
 
 def ping():
     get_ipython().system('say done')
@@ -801,8 +511,6 @@ def bounds_check_window(i, xs: [int], winsize, N):
     ix1 = max(0, i-winsize)
     ix2 = min(N, i+winsize+1)
     return x, xs[ix1:i] + xs[i + 1:ix2]
-
-
 
 
 @nopython
@@ -1059,39 +767,44 @@ cnfe = update(cnf, C=4, iter=0, term=dict(), N=100, dir='cache/v12', epoch=0)
 
 # In[ ]:
 
+default
 
+size=100
+alpha=0.025
+window=5
+sample=0
+negative=0
+sg=1
+iter=4
 
-
-# In[ ]:
-
-Word2Vec(self, sentences=None , size=cnfe.N, alpha=0.025, window=cnfe.C,
-         min_count=5, workers=1, min_alpha=0.0001, sg=1, negative=cnfe.K, iter=1, null_word=0, trim_rule=None)
-
-
-# In[ ]:
-
-# %time gmod = Word2Vec(brown.sents())
-get_ipython().magic('time gmod = Word2Vec(brown.sents())')
-
-
-# In[ ]:
-
-
+min_alpha=0.0001
 
 
 # In[ ]:
 
-neg_sampler_np(xs, K, cache_len=1000, use_seed=False, pow=0.75)
+gparams = dict(
+    size=120, # 80, #
+    alpha=0.025,
+    window=2,
+    sample=0,
+    negative=2,  #[5, 7, 10, 12, 15, 17], 0
+    sg=1,
+    iter=4,
+)
 
 
 # In[ ]:
 
-
+def ev(mod):
+    ans = mod.accuracy('src/questions-words.txt', restrict_vocab=10000)
+    sect = [d for d in ans if d['section'] == 'total']
+    return sum([1 for d in sect for _ in d['correct']])
 
 
 # In[ ]:
 
-len(set(brown.words()))
+get_ipython().magic('time gmod = Word2Vec(brown.sents(), **update(gparams))')
+ev(gmod)
 
 
 # In[ ]:
@@ -1114,12 +827,16 @@ def tokenize(wds):
     alpha_re = re.compile(r'[A-Za-z]')
     return [w for w in wds if alpha_re.search(w)]
 
-def prune_words(wds, keep_n_words=30000):
-    if keep_n_words is None:
+def prune_words(wds, keep_n_words=30000, min_counts=None):
+    if (keep_n_words is None) and (min_counts is None):
         return wds
     cts = Counter(wds)
-    cts2 = set(sorted(cts, key=cts.get, reverse=True)[:keep_n_words])
-    return [w for w in wds if w in cts2]
+    if min_counts is not None:
+        return [w for w in wds if cts[w] >= min_counts]
+    elif keep_n_words is not None:
+        keeps = set(sorted(cts, key=cts.get, reverse=True)[:keep_n_words])
+        
+    return [w for w in wds if w in keeps]
 
 # c2 = prune_words(brown.words(), keep_n_words=10)
 
@@ -1131,10 +848,29 @@ toks, le = to_ints(nopunct)
 
 # In[ ]:
 
+def from_gensim_params(params, cnf, **upkw):
+    gsim2param_names = dict(negative='K', alpha='eta', size='N')
+    newparams = {pn: params[gn] for gn, pn in gsim2param_names.items()}
+    newparams['C'] = params['window'] * 2
+    cnf2 = update(cnf, **newparams, **upkw)
+    return cnf2
+
+cnff = Conf(from_gensim_params(gparams, cnfe, dir='cache/v13'))
+# cnff
+
+
+# In[ ]:
+
+params = gparams
+params
+
+
+# In[ ]:
+
 class word2vec(object):
-    def __init__(self, words, cnf, neg_sampler=to_list_gen(neg_sampler_np), keep_n_words=30000, **sgd_kwds):
-        text = prune_words(tokenize(words), keep_n_words=keep_n_words)
-        prune_words(brown.words(), keep_n_words=10)
+    def __init__(self, words, cnf, neg_sampler=to_list_gen(neg_sampler_np),
+                 keep_n_words=None, min_counts=None, **sgd_kwds):
+        text = prune_words(tokenize(words), keep_n_words=keep_n_words, min_counts=min_counts)
         
         self.text = text
         self.toks, self.le = to_ints(self.text)
@@ -1147,12 +883,15 @@ class word2vec(object):
         cnf = self.cnf
         if term:
             cnf = update(cnf, term=term)
-        print(cnf)
         res = sgd(W=self.W.copy(), corp=self.toks, neg_sampler=self.neg_sampler,
                   cf=cnf, vc=self.le.classes_, **z.merge(self.sgd_kwds, sgd_kwds))
         self.W, self.cnf = res
+        
+    @property
+    def df(self):
+        return DataFrame(self.W.copy(), index=self.le.classes_)
 
-modf = word2vec(brown.words(), cnfe, neg_sampler=neg_sampler_j)
+modf = word2vec(brown.words(), cnff, neg_sampler=neg_sampler_j, keep_n_words=None, min_counts=5)
 
 
 # In[ ]:
@@ -1168,18 +907,481 @@ fast_opts = dict(ns_grad=ns_grad_jit, sliding_window=sliding_window_jit)
 
 # In[ ]:
 
-partition
+get_ipython().run_cell_magic('time', '', "for i in range(4):   \n    modf.run(term={}, **fast_opts)  # 'iters': 10000\n!say done")
 
 
 # In[ ]:
 
-get_ipython().magic("time modf.run(term={}, **fast_opts)  # 'iters': 10000")
-get_ipython().system('say done')
+modf.run(term={}, **fast_opts)
 
 
 # In[ ]:
 
-W2 = modf.W.copy()
+gmod = 
+
+
+# In[ ]:
+
+gparams
+
+
+# In[ ]:
+
+Word2Vec
+
+
+# In[ ]:
+
+modf.cnf
+
+
+# ## Evaluate
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+
+
+def partition(pred, iterable):
+    'Use a predicate to partition entries into false entries and true entries'
+    # partition(is_odd, range(10)) --> 0 2 4 6 8   and  1 3 5 7 9
+    t1, t2 = it.tee(iterable)
+    return it.filterfalse(pred, t1), ifilter(pred, t2)
+
+with open('src/questions-words.txt', 'r') as f:
+    qlns = f.read().splitlines()
+
+
+# In[ ]:
+
+with open('src/questions-words.txt', 'r') as f:
+    qlns = f.read().splitlines()
+
+
+# modf.df = DataFrame(modf.W.copy(), index=modf.le.classes_)
+# W2 = modf.df
+
+# In[ ]:
+
+del W2
+
+
+# In[ ]:
+
+sections, qs = partition(lambda s: not s.startswith(':'), qlns)
+qs = list(qs)
+# allwds = set(modf.df.index)
+# del allwds
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+cts = Series(Counter(modf.text)) # / len(modf.text)
+assert (cts.index == modf.le.classes_).all()
+keeps = cts >= 5
+Wk = modf.df.divide(norm(modf.df, axis=1), axis=0)
+Wsmall = Wk[keeps]
+assert (norm(Wk, axis=1).round(4) == 1).all(), 'Not normalized'
+# assert (Wk.sum(axis=1).round(4) == 1).all(), 'Not normalized'
+
+
+# In[ ]:
+
+get_ipython().magic('lprun -s -f eval eval_qs(Wk, lim=500)')
+
+
+# In[ ]:
+
+def to_vec(w, W):
+    if isinstance(w, str):
+        return W.ix[w]
+    return w
+
+def to_vec2(w, W, wd2row=None):
+    if isinstance(w, str):
+        return W.values[wd2row[w]]
+    return w
+
+neg = lambda x: -x
+
+def combine(plus=[], minus=[], W=None, wd2row=None):
+    to_vec_ = partial(to_vec, W=W)
+    vecs = map(to_vec_, plus) + map(z.comp(neg, to_vec_), minus)
+    v = sum(vecs) / len(vecs)
+    return v / norm(v)
+
+def combine2(plus=[], minus=[], W=None, wd2row=None):
+    # plus_ix = [wd2row[p] for p in plus]
+    # minus_ix = [wd2row[p] for p in minus]
+    ixs = [wd2row[p] for p in plus + minus]
+    vecs1 = Wk.values[ixs]
+    to_vec_ = partial(to_vec2, W=W, wd2row=wd2row)
+    
+    vecs = map(to_vec_, plus) + map(z.comp(neg, to_vec_), minus)
+    vecs = np.array(vecs)
+    return combine_(vecs)
+    v = sum(vecs) / len(vecs)
+    return v / norm(v)
+
+
+@nopython
+def combine_(vecs):
+#     v = sum(vecs) / len(vecs)
+    v = np.sum(vecs, axis=0) / len(vecs)
+    return v / np.linalg.norm(v)
+
+
+# In[ ]:
+
+aa = np.array(vecs)
+aa.shape
+
+
+# In[ ]:
+
+combine_(aa)
+
+
+# In[ ]:
+
+get_ipython().magic('lprun -s -f combine2 combine2(plus=[b, c], minus=[a], W=Wk, wd2row=wd2ix)')
+
+
+# In[ ]:
+
+wvec = combine(plus=[b, c], minus=[a], W=Wk)
+wvec[:5]
+
+
+# In[ ]:
+
+mk_wd2row = lambda W: dict(zip(W.index, count()))
+
+
+# In[ ]:
+
+wd2ix = mk_wd2row(Wk)
+wvec2 = 
+wvec2[:5]
+
+
+# In[ ]:
+
+get_ipython().magic('timeit combine(plus=[b, c], minus=[a], W=Wk)')
+get_ipython().magic('timeit combine2(plus=[b, c], minus=[a], W=Wk, wd2row=wd2ix)')
+
+
+# In[ ]:
+
+get_ipython().magic('timeit np.array(vecs)')
+
+
+# In[ ]:
+
+combine2(plus=[b, c], minus=[a], W=Wk, wd2row=wd2ix)
+
+
+# In[ ]:
+
+(wvec == wvec2).all()
+
+
+# In[ ]:
+
+@nopython
+def index(wd2ix):
+    
+    return wd2ix
+
+
+# In[ ]:
+
+wds, arr, 
+
+
+# In[ ]:
+
+index({'abc': 123})
+
+
+# Wv = Wk.values
+# f1 = lambda: Wk.ix['youngster']
+# f2 = lambda: Wk.iloc[-18]
+# f3 = lambda: Wv[-18]
+# assert np.allclose(f1(), f3())
+# assert np.allclose(f1(), f2())
+# 
+# %timeit f1()
+# %timeit f2()
+# %timeit f3()
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+def eval(q, Wall=None, Wsmall=None, Wnorm=None, allwds=None):
+    qwds = a, b, c, d = q.split()
+    if allwds is None:
+        print('Warning: precalculate `allwds`')
+        allwds = set(Wall.index)
+    missing_wds = {a, b, c} - allwds
+    if missing_wds:
+        # print(u'\u2639', end='')
+#         print(u'.', end='')
+        return False
+    wvec = combine(plus=[b, c], minus=[a], W=Wall)
+    [closest] = wut.get_closestn(wd=wvec, W=Wsmall, n=1, exclude=[a, b, c], just_word=1)
+    ans = closest == d
+        
+    return ans
+
+        
+def eval_qs(Wsmall, Wall, lim=None):
+    Wn = np.linalg.norm(Wsmall, axis=1)
+    allwds = set(Wall.index)
+    sm = 0
+    for ql in qs[:lim]:
+        print(list(allwds)[:5])
+        e = eval(ql, Wall=Wall, Wsmall=Wsmall, Wnorm=Wn, allwds=allwds)
+        if e:
+#             print('!', end='')
+            print(ql, end=':')
+            sm += 1
+    return sm
+    #     break
+
+
+# In[ ]:
+
+get_ipython().magic('pinfo2 Wk.ix')
+
+
+# In[ ]:
+
+Wk._
+
+
+# In[ ]:
+
+# %lprun -s -f eval eval_qs(Wk, lim=500)
+get_ipython().magic('lprun -s -f combine eval(ql, Wall=Wk, Wsmall=Wk, Wnorm=norm(Wk, axis=1), allwds=set(Wk.index))')
+
+
+# In[ ]:
+
+# %lprun eval(ql, Wall=Wk, Wsmall=Wk, Wnorm=norm(Wk, axis=1))
+
+
+# In[ ]:
+
+sc
+
+
+# In[ ]:
+
+sc = eval_qs(Wk, Wk, lim=50)
+
+
+# In[ ]:
+
+sc
+
+
+# In[ ]:
+
+Wk.shape
+
+
+# In[ ]:
+
+gmod.syn0norm.shape
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+a, b, c, d = 'boy', 'girl', 'brothers', 'sisters'
+
+
+# In[ ]:
+
+norm = np.linalg.norm
+reload(wut);
+
+
+# In[ ]:
+
+closests = wut.get_closestn.closests
+print(len(closests))
+closests
+
+
+# In[ ]:
+
+norm(Wk, axis=1)
+
+
+# In[ ]:
+
+wvec = combine(plus=[b, c], minus=[a], W=Wk)
+cl = wut.get_closestn(wd=wvec, W=Wk, Wnorm=None, n=1, exclude=[a, b, c], just_word=1)
+cl
+
+
+# In[ ]:
+
+wut.cdist(wvec, Wk)[Wk.index.isin([a, b, c])]
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+sis = Wsmall.ix['sisters']
+(sis @ wvec) / (norm(sis) * norm(wvec))
+
+
+# In[ ]:
+
+ga, gb, gc, gd = gmod.vocab[a], gmod.vocab[b], gmod.vocab[c], gmod.vocab[d],
+ga, gb, gc, gd = gmod.syn0norm[ga.index], gmod.syn0norm[gb.index], gmod.syn0norm[gc.index], gmod.syn0norm[gd.index]
+gv = (gb + gc - ga) / 3
+gv /= norm(gv)
+
+
+# In[ ]:
+
+gv
+
+
+# In[ ]:
+
+norms = gmod.syn0norm @ gv
+isort = np.argsort(norms)[::-1][:20]
+
+
+# In[ ]:
+
+[gmod.index2word[i] for i in isort]
+
+
+# In[ ]:
+
+norms[isort]
+
+
+# In[ ]:
+
+isort
+
+
+# In[ ]:
+
+gmod.syn0norm.shape
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+get_ipython().magic('pinfo get_closests')
+get_closests 
+
+
+# In[ ]:
+
+sc
+
+
+# In[ ]:
+
+len(Wk)
+
+
+# In[ ]:
+
+gsc = gmod.accuracy('src/questions-words.txt')
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+gsc_dct = {doc.pop('section'): doc for doc in gsc}
+gfound = {w for set_ in gsc_dct['total']['correct'] for w in set_[:3]}
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+b, c, gmod.most_similar(positive=[b])
+
+
+# In[ ]:
+
+gmod.most_similar(positive=[b, c], negative=[a])
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+gsc_dct['family']['correct']
+
+
+# In[ ]:
+
+for doc in gsc:
+    print(doc['section'], end=': ')
+    print(len(doc['correct']))
+#     break
+
+
+# In[ ]:
+
+list(gsc)
+
+
+# In[ ]:
+
+
 
 
 # In[ ]:
@@ -1198,11 +1400,155 @@ ls src/
 get_ipython().magic("time mod.run(term={})  # 'iters': 10000")
 
 
-# ## Hyperparam search
+# ## Gensim benchmarking
+
+# In[ ]:
+
+import gensim
+from gensim.models.word2vec import Word2Vec
+
+
+# In[ ]:
+
+get_ipython().magic('pinfo Word2Vec')
+
+
+# In[ ]:
+
+gparams
+
+
+# In[ ]:
+
+gensim_sents = brown.sents() # [s.orth_.split() for s in atks.sents]
+
+param_vals = dict(
+    sample=[1e-3, 5e-3, 1e-2, 5e-2, .1, .15, 0],
+    negative=range(0, 8),  #[5, 7, 10, 12, 15, 17],
+    window=range(2, 20),
+    sg=[0, 1],
+    size=np.arange(1, 40) * 4,
+    alpha=[0.05, 0.025, 0.01, 0.005],
+    iter=range(1, 5),
+    
+)
+
+param_lst = ['alpha', 'iter', 'negative', 'sample', 'sg', 'size', 'window']
+assert sorted(param_vals) == param_lst, 'Need to update param_lst'
+
+cs = param_lst + ['score']
+to_param_dct = lambda xs: OrderedDict(zip(param_lst, xs))
+from_param_dct = lambda dct, cs=param_lst: [dct[c] for c in cs]
+
+# param_vals
+
+
+# get_closests(to_param_dct([0.025, 4.0, 0.0, 0.0, 1.0, 80.0, 4.0]))
+
+# In[ ]:
+
+to_param_dct([0.025, 4.0, 0.0, 0.0, 1.0, 80.0, 4.0])
+
+
+# In[ ]:
+
+def get_closest(k, v, poss=param_vals):
+    return min(poss[k], key=lambda x: abs(v - x))
+
+def get_closests(dct, poss=param_vals):
+    return {k: get_closest(k, v, poss=poss) for k, v in dct.items()}
+
+def param_gen(params, n_iters=None):
+    counter = count() if n_iters is None else range(n_iters)
+    for i in counter:
+        yield {k: nr.choice(v) for k, v in param_vals.items()}
+
+def run_model(n=None, perfs=None, lfname='cache/log.csv'):
+    pg = param_gen(param_vals, n)
+
+    for params in pg:
+        st = time.time()
+        model = Word2Vec(sentences=gensim_sents, workers=4, **params)
+        perf = dict(params)
+        perf['score'] = score(model)
+        perfs.append(perf)
+        print('time: {:.2f}'.format(time.time() - st))
+      
+        if not os.path.exists(lfname):
+            mode, header = 'w', True
+        else:
+            mode, header = 'a', False
+        with open(lfname, mode) as f:
+            DataFrame([perf])[cs].to_csv(f, header=header, sep='\t')
+        sys.stdout.flush()
+    return perfs
+
+def score(model, restrict_vocab=10000):
+    acc = model.accuracy('src/questions-words.txt', restrict_vocab=restrict_vocab)
+    [tot] = [d for d in acc if d['section'] == 'total']
+    print(len(tot['correct']), '/', len(tot['incorrect']) + len(tot['correct']), end=' ')
+    return len(tot['correct'])
+
+
+# In[ ]:
+
+param_ex = next(param_gen(param_vals, None))
+ex_vals = map(itg(1), sorted(param_ex.items()))
+to_param_dct(ex_vals)
+
+
+# In[ ]:
+
+para
+
+
+# In[ ]:
+
+res = minimize(rosen, x0, method='nelder-mead',
+               options={'xtol': 1e-8, 'disp': True})
+
+
+# In[ ]:
+
+def eval_func(paramlist):
+    print(paramlist)
+    param_dct_ = to_param_dct(paramlist)
+    param_dct = {k: get_closest(k, v) for k, v in param_dct_.items()}
+    print(param_dct)
+    model = Word2Vec(sentences=gensim_sents, workers=4, **param_dct)
+    return score(model)
+
 
 # In[ ]:
 
 
+
+
+# In[ ]:
+
+from scipy.optimize import minimize
+
+
+# In[ ]:
+
+get_ipython().magic('pinfo minimize')
+
+
+# In[ ]:
+
+# perfs = []
+perfs = run_model(n=None, perfs=perfs)
+## End Gensim benchmarking
+
+
+# In[ ]:
+
+cs
+
+
+# In[ ]:
+
+perfs[:4][cs]
 
 
 # In[ ]:
@@ -1575,5 +1921,5 @@ pd.rolling_mean(gnrms, 20).plot()
 
 # In[ ]:
 
-
+z
 

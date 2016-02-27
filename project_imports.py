@@ -5,9 +5,11 @@ from itertools import count
 import itertools as it
 import operator as op
 from operator import itemgetter as itg, attrgetter as prop, methodcaller as mc
+import os
 from os.path import join
 import re
 import sys
+import time
 import warnings; warnings.filterwarnings("ignore")
 
 
@@ -39,6 +41,14 @@ map = listify(builtins.map)
 range = listify(builtins.range)
 filter = listify(builtins.filter)
 zip = listify(builtins.zip)
+
+imap = builtins.map
+irange = builtins.range
+ifilter = builtins.filter
+izip = builtins.zip
+
+Series.__matmul__ = Series.dot
+DataFrame.__matmul__ = DataFrame.dot
 
 pd.options.display.notebook_repr_html = False
 pd.options.display.width = 120
