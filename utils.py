@@ -1,6 +1,6 @@
 from collections import namedtuple, OrderedDict, defaultdict
 from functools import reduce, partial
-from itertools import repeat  # , filterfalse, tee
+from itertools import repeat, islice  # , filterfalse, tee
 import numpy as np
 import pandas as pd
 from pandas import DataFrame
@@ -245,3 +245,4 @@ def get_multi_case(ks, txt, thresh=.9):
 
 
 phrase2wd = lambda x: '_'.join(re.split(r'[ -]', x))
+take = z.comp(list, islice)
