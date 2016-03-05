@@ -10,6 +10,7 @@ dependencies:
   - fuzzywuzzy
   - autograd
   - voluptuous
+  - pytest
 - python=3.5
 - spacy
 - nltk
