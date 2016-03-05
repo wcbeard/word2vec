@@ -7,10 +7,12 @@ import numpy as np
 import numpy.random as nr
 from pandas import Series, DataFrame, Index
 from typing import Union, Iterable, Dict, List
+from numba import jit
 
 import toolz.curried as z
 from voluptuous import Any, Invalid
 
+nopython = jit(nopython=True)
 
 map = z.comp(list, builtins.map)
 UNKNOWN = '<UNK>'
@@ -216,6 +218,49 @@ def get_closestn(wd='death', n=20, W=None, Wnorm=None, freq=None, exclude=[], ju
 
     # get_closestn(W=w)
     return df.reset_index(drop=0).rename(columns={'index': 'Word'})
+
+
+# Subsample
+def get_subsample_prob(txt, thresh=.001):
+    cts = Counter(txt)
+    freq = np.array([cts[w] for w in txt]) / sum(cts.values())
+    p = 1 - np.sqrt(thresh / freq)
+    return np.clip(p, 0, 1)
+
+
+def get_subsample(txt, thresh=.001) -> (['keep'], ['drop']):
+    """
+    Drop words with frequency above given threshold according to frequency.
+    From "Distributed Representations of Words and Phrases and their Compositionality"
+    Returns pair of (left in words, left out words)
+    """
+    p = get_subsample_prob(txt, thresh=thresh)
+    drop = np.zeros_like(p, dtype=bool)
+
+    for pval in sorted(set(p[p > 0]), reverse=1):
+        bm = p == pval
+        n = bm.sum()
+        pdrop = nr.random(n) < pval
+        drop[bm] = pdrop
+
+    print('Dropping {:.2%} of words'.format(drop.mean()))
+    return txt[~drop], txt[drop]
+
+
+# Negative sampler
+@nopython
+def bisect_left_jit(a, v):
+    """Based on bisect module at (commit 1fe0fd9f)
+    cpython/blob/master/Modules%2F_bisectmodule.c#L150
+    """
+    lo, hi = 0, len(a)
+    while (lo < hi):
+        mid = (lo + hi) // 2
+        if a[mid] < v:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
 
 
 # Config helpers
