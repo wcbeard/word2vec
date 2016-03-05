@@ -43,7 +43,7 @@ filter = listify(builtins.filter)
 zip = listify(builtins.zip)
 
 imap = builtins.map
-irange = builtins.range
+xrange = builtins.range
 ifilter = builtins.filter
 izip = builtins.zip
 
