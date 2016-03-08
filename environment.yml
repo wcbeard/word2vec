@@ -21,6 +21,7 @@ dependencies:
 - joblib
 - statsmodels
 - scikit-learn
+- pygments
 #- mkl
 
 - numba

@@ -10,7 +10,7 @@ from typing import Union, Iterable, Dict, List
 from numba import jit
 
 import toolz.curried as z
-from voluptuous import Any, Invalid
+from voluptuous import Any, Invalid, Schema, ALLOW_EXTRA
 
 nopython = jit(nopython=True)
 
@@ -279,6 +279,24 @@ def even(x):
         raise Invalid('x must be an even number')
     return x
 
-
 Num = Any(float, int)
 Dict = lambda x: Any(x, {})
+
+Conf = Schema(dict(
+    eta=Num,      # initial learning rate
+    min_eta=Num,  # final learning rate
+    # norm=Num,
+    accumsec=Num, # total training time so far
+    # norms=Dict({int: float}),
+    # gradnorms=Dict({int: float}),
+    N=int,       # input (== output) vector dimensions
+    K=int,       # number of negative samples drawn for each true context word
+    term={},     # terminating condition:  iters=#words, secs=# secs or empty for full epoch
+    iter=int,    # if `term` not empty, this keeps track the index of the last word,
+                 # to pick up from on the next iteration
+    epoch=int,   # Number of epochs so far
+    dir=str,     # directory to save CSV of gradient to
+    C=even,      # window diameter; must be an even number
+    thresh=Num,  # gradient norm threshold for decreasing learning rate
+), extra=ALLOW_EXTRA, required=True)
+Conf = orig_type(Conf)
