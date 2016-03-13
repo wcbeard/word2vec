@@ -247,22 +247,6 @@ def get_subsample(txt, thresh=.001) -> (['keep'], ['drop']):
     return txt[~drop], txt[drop]
 
 
-# Negative sampler
-@nopython
-def bisect_left_jit(a, v):
-    """Based on bisect module at (commit 1fe0fd9f)
-    cpython/blob/master/Modules%2F_bisectmodule.c#L150
-    """
-    lo, hi = 0, len(a)
-    while (lo < hi):
-        mid = (lo + hi) // 2
-        if a[mid] < v:
-            lo = mid + 1
-        else:
-            hi = mid
-    return lo
-
-
 # Config helpers
 def orig_type(f):
     return wraps(f)(lambda x: type(x)(f(x)))

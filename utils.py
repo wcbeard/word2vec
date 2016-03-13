@@ -246,3 +246,4 @@ def get_multi_case(ks, txt, thresh=.9):
 
 phrase2wd = lambda x: '_'.join(re.split(r'[ -]', x))
 take = z.comp(list, islice)
+ilen = lambda xs: sum(1 for _ in xs)

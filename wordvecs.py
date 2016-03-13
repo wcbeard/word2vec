@@ -28,28 +28,22 @@ get_ipython().run_cell_magic('javascript', '', "var csc = IPython.keyboard_manag
 # In[ ]:
 
 from project_imports import *
-import utils as ut; reload(ut);
 get_ipython().magic('matplotlib inline')
 
 
 # In[ ]:
 
-# import scipy as sp
-# sp.sparse.csr_matrix.__matmul__ = sp.sparse.csr_matrix.dot
-# import numpy as np
-# from numpy import exp, log
-
-
-# In[ ]:
-
 import wordvec_utils as wut; reload(wut);
-from wordvec_utils import Cat, WordVectorizer
-from voluptuous import Schema, ALLOW_EXTRA
+from wordvec_utils import Cat, WordVectorizer, update, Conf
+import utils as ut; reload(ut);
+from utils import take, ilen
 
+from numba_utils import ns_grad as ns_grad_jit
+import numba_utils as nbu; reload(nbu)
+from autograd import numpy as npa, grad
 
-# In[ ]:
-
-ilen = lambda xs: sum(1 for _ in xs)
+from numba import jit
+nopython = jit(nopython=True)
 
 
 # In[ ]:
@@ -115,20 +109,6 @@ def skipgram_likelihood(wi, cwds, dv=None):
 # 
 # The numpy gradient is below as `ns_grad`; the numba gradient `ns_grad_jit` is similar, but all of the functions used in a JIT'd function must also be numba-JIT'd, so I moved them all out to another module. 
 # 
-
-# In[ ]:
-
-# from autograd.numpy import exp, log
-# from builtins import zip as izip, range as xrange
-# import negsamp_grad; reload(negsamp_grad);
-# import numpy as np
-
-from negsamp_grad import ns_grad as ns_grad_jit
-from autograd import numpy as npa, grad
-
-from numba import jit
-nopython = jit(nopython=True)
-
 
 # In[ ]:
 
@@ -308,79 +288,44 @@ def neg_sampler_pd(xs, K, pow=.75):
         yield ug.Word.sample(n=K, weights=ug.Prob, random_state=seed, replace=True)
         
         
-def neg_sampler_np_a(xs, K, cache_len=1000, use_seed=False, pow=.75):
+def neg_sampler_np(xs, K, cache_len=1000, use_seed=False, pow=.75, ret_type=np.ndarray):
     "Faster neg. sampler without the pandas overhead"
     ug = unigram(xs, pow=pow)
     p = ug.Prob.values / ug.Prob.sum()
     a = ug.Word.values
 
-    for seed in count():
-        if use_seed:
-            nr.seed(seed)
-        Wds = nr.choice(a, size=(cache_len, K), p=p)
-        for wds in Wds:
-            yield list(wds)
+    def neg_sampler_np_():
+        for seed in count():
+            if use_seed:
+                nr.seed(seed)
+            Wds = nr.choice(a, size=(cache_len, K), p=p)
+            for wds in Wds:
+                yield wds
+                
+    agen = neg_sampler_np_()            
+    if ret_type == list:
+        return imap(list, agen)
+    assert ret_type == np.ndarray, 'Only defined for type in {np.ndarray, list}'
+    return agen
 
-def neg_sampler_np_l(xs, K, cache_len=1000, use_seed=False, pow=.75):
-    gen = neg_sampler_np_a(xs, K, cache_len=cache_len, use_seed=use_seed, pow=pow)
-    return imap(list, gen)
-    
 
-def neg_sampler_jit(xs, K, pow=.75, type=list):
+def neg_sampler_jit(xs, K, pow=.75, ret_type=list):
     ug = unigram(xs, pow=pow)
     cum_prob = ug.Prob.cumsum() / ug.Prob.sum()
-    if type == list:
-        sampler = neg_sampler_jitl_
-    elif type == np.array:
-        sampler = neg_sampler_jita_
+    sampler = {
+        list:     nbu.neg_sampler_jitl_,
+        np.ndarray: nbu.neg_sampler_jita_,
+    }[ret_type]
     return sampler(cum_prob.values, K)
 
-def neg_sampler_jit_pad(xs, K, pow=.75, type=list, pad=0):
+def neg_sampler_jit_pad(xs, K, pow=.75, ret_type=list, pad=0):
     ug = unigram(xs, pow=pow)
     cum_prob = ug.Prob.cumsum() / ug.Prob.sum()
-    if type == list:
-        sampler = neg_sampler_jitl_pad
-    elif type == np.array:
-        sampler = neg_sampler_jita_pad
+    sampler = {
+        list:     nbu.neg_sampler_jitl_pad,
+        np.ndarray: nbu.neg_sampler_jita_pad,
+    }[ret_type]
     return sampler(cum_prob.values, K, pad=pad)
-
-# def neg_sampler_jita(xs, K, pow=.75):
-#     ug = unigram(xs, pow=pow)
-#     cum_prob = ug.Prob.cumsum() / ug.Prob.sum()
-#     return neg_sampler_jita_(cum_prob.values, K)
-    
-@nopython
-def neg_sampler_jitl_pad(cum_prob, K, pad=0):
-    init = [0] * pad
-    while 1:
-        l = list(init)
-        for i in xrange(K):
-            l.append(wut.bisect_left_jit(cum_prob, nr.rand()))
-        yield l
-        
-@nopython
-def neg_sampler_jitl_(cum_prob, K):
-    while 1:
-        l = []
-        for i in xrange(K):
-            l.append(wut.bisect_left_jit(cum_prob, nr.rand()))
-        yield l
-
-@nopython
-def neg_sampler_jita_(cum_prob, K):
-    while 1:
-        a = np.empty(K, dtype=np.int64)
-        for i in xrange(K):
-            a[i] = wut.bisect_left_jit(cum_prob, nr.rand())
-        yield a
-
-@nopython
-def neg_sampler_jita_pad(cum_prob, K, pad=0):
-    while 1:
-        a = np.empty(K + pad, dtype=np.int64)
-        for i in xrange(pad, K + pad):
-            a[i] = wut.bisect_left_jit(cum_prob, nr.rand())
-        yield a
 
 
 # gen = sample_(ug.Cum_prob.values, 8)
@@ -393,7 +338,7 @@ def neg_sampler_jita_pad(cum_prob, K, pad=0):
 
 from sklearn.preprocessing import LabelEncoder
 from nltk.corpus import brown
-some_text = ut.take(brown.words(), int(1e6))
+some_text = take(brown.words(), int(1e6))
 
 
 # In[ ]:
@@ -404,37 +349,108 @@ smtok = le.fit_transform(some_text)
 
 # In[ ]:
 
-gen_jita = neg_sampler_jit(smtok, 8, type=np.array)
-gen_jita2 = neg_sampler_jit_pad(smtok, 8, type=np.array, pad=2)
+init_sampler = lambda ns: len(next(ns)) and ns
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+kw = {'1':1}
+dict(a='b', **kw)
+
+
+# In[ ]:
+
+dict
+
+
+# In[ ]:
+
+class NegSampler:
+    def __init__(self, sampler, toks, K=None, ret_type=None, pad=None, nxt=True, **kw):
+        if pad is not None:
+            kw['pad'] = pad
+        if ret_type is not None:
+            kw['ret_type'] = ret_type
+        
+        self.sampler = sampler(toks, K, **kw)
+        if nxt:
+            a = next(self.sampler)
+            if ret_type:
+                assert isinstance(a, ret_type)
+        self.toks = toks
+        self.K = K
+        self.ret_type = ret_type
+        self.pad = pad or 0
+        
+    def __iter__(self):
+        return self.sampler
+    
+    def __next__(self):
+        return next(self.sampler)
+    
+    def __repr__(self):
+        return ('NegSampler(pad={pad}, K={K}, type={ret_type.__name__})'
+                .format(pad=self.pad, K=self.K, ret_type=self.ret_type))
+
+
+# In[ ]:
+
+gen_jita_pad = NegSampler(neg_sampler_jit_pad, smtok, K=8, ret_type=np.ndarray, pad=2)
+
+
+# In[ ]:
+
+gen_jita_pad
+
+
+# In[ ]:
+
+gen_jitl =     NegSampler(neg_sampler_jit, smtok, 8, ret_type=list)
+gen_jitl_pad = NegSampler(neg_sampler_jit_pad, smtok, 8, ret_type=list, pad=2)
+gen_jita =     NegSampler(neg_sampler_jit, smtok, 8, ret_type=np.ndarray)
+gen_jita_pad = NegSampler(neg_sampler_jit_pad, smtok, 8, ret_type=np.ndarray, pad=2)
+gen_npa =      NegSampler(neg_sampler_np, smtok, 8, ret_type=np.ndarray)
+gen_npl =      NegSampler(neg_sampler_np, smtok, 8, ret_type=list)
+gen_pd =       NegSampler(neg_sampler_pd, smtok, 8)
+
+
+# In[ ]:
+
+gen_jita_pad = neg_sampler_jit_pad(smtok, 8, type=np.array, pad=2)
+# gen_jita2 = neg_sampler_jit_pad(smtok, 8, type=np.array, pad=2)
 gen_jitl = neg_sampler_jit(smtok, 8, type=list)
 gen_jitl2 = neg_sampler_jit_pad(smtok, 8, type=list, pad=2)
-gen_npa = neg_sampler_np_a(smtok, 8)
-gen_npl = neg_sampler_np_l(smtok, 8)
+gen_npa = neg_sampler_np(smtok, 8, type=np.array)
+gen_npl = neg_sampler_np(smtok, 8, type=list)
 gen_pd = neg_sampler_pd(smtok, 8)
-
-next(gen_jita); next(gen_jitl); next(gen_jitl2); next(gen_npa); next(gen_jita2); next(gen_npl); next(gen_pd);
-
-
-# In[ ]:
-
-get_ipython().magic('timeit ilen(it.islice(gen_npl, 1000))')
-get_ipython().magic('timeit ilen(it.islice(gen_npa, 1000))')
+del gen_jita_pad, gen_jitl, gen_jitl2, gen_npa, gen_npl, gen_pd
+# next(gen_jitl2); next(gen_jita2);
+# next(gen_jita_pad); next(gen_jita); next(gen_jitl); next(gen_npa); next(gen_npl); next(gen_pd);
 
 
 # In[ ]:
 
-get_ipython().magic('timeit ilen(it.islice(gen_jitl, 1000))')
-get_ipython().magic('timeit ilen(it.islice(gen_jitl2, 1000))')
-get_ipython().magic('timeit ilen(it.islice(gen_jita, 1000))')
-get_ipython().magic('timeit ilen(it.islice(gen_jita2, 1000))')
+run_n = lambda gen, n=10000: ilen(it.islice(gen, n))
+get_ipython().magic('timeit run_n(gen_npl)')
+get_ipython().magic('timeit run_n(gen_npa)')
+get_ipython().magic('timeit run_n(gen_jitl)')
+get_ipython().magic('timeit run_n(gen_jitl_pad)')
+get_ipython().magic('timeit run_n(gen_jita)')
+get_ipython().magic('timeit run_n(gen_jita_pad)')
 
 
 # In[ ]:
 
 n = 100000
-get_ipython().magic('time csp = Series(Counter(x for xs in it.islice(gen_pd, n // 100) for x in xs))')
-get_ipython().magic('time csnp = Series(Counter(x for xs in it.islice(gen_npl, n) for x in xs))')
-get_ipython().magic('time csj = Series(Counter(x for xs in it.islice(gen_jita, n) for x in xs))')
+csp = Series(Counter(x for xs in it.islice(gen_pd, n // 100) for x in xs))
+csnp = Series(Counter(x for xs in it.islice(gen_npl, n) for x in xs))
+csj = Series(Counter(x for xs in it.islice(gen_jita_pad, n) for x in xs[2:]))
+# %time csj = Series(Counter(x for xs in it.islice(gen_jita, n) for x in xs))
 
 ug = unigram(smtok, pow=.75)
 cts = DataFrame({'Numba': csj, 'Numpy': csnp, 'Pandas': csp}).fillna(0)
@@ -460,6 +476,11 @@ plot_dist(xcol='Pandas', subplt=133)
 
 # ### Sliding window
 # It turned out another significant bottleneck of the gradient descent routine was the sliding window code that iterates over the entire corpus, yielding a word and its context words at each point. 
+
+# In[ ]:
+
+del smtok
+
 
 # In[ ]:
 
@@ -500,24 +521,13 @@ def sliding_window_jit(xs, C=4):
     for i in xrange(N-winsize, N):
         yield bounds_check_window(i, xs, winsize, N)
 
-      
-@nopython
-def concat(a, b):
-    na = len(a)
-    n = na + len(b)
-    c = np.empty(n, dtype=a.dtype)
-    for i in xrange(na):
-        c[i] = a[i]
-    for i in xrange(len(b)):
-        c[i + na] = b[i]
-    return c
 
 @nopython
 def bounds_check_window_arr(i, xs: np.array, winsize, N):
     x = xs[i]
     ix1 = max(0, i-winsize)
     ix2 = min(N, i+winsize+1)
-    return x, concat(xs[ix1:i], xs[i + 1:ix2])
+    return x, nbu.concat(xs[ix1:i], xs[i + 1:ix2])
 
 @nopython
 def sliding_window_jit_arr(xs, C=4):
@@ -544,7 +554,7 @@ def sliding_window_jit_arr(xs, C=4):
 samp_toks = nr.randint(0, 1e6, size=100005)
 samp_toksl = list(samp_toks)
 list(sliding_window_jit(samp_toksl[:10], C=4))
-run_window = lambda f, toks=samp_toksl: list(f(toks, C=4))
+run_window = lambda f, toks=samp_toksl: [ut.ilen(xs) for xs in f(toks, C=4)]
 
 
 # In[ ]:
@@ -561,26 +571,12 @@ get_ipython().magic('timeit run_window(sliding_window_jit_arr, toks=samp_toks)')
 
 # In[ ]:
 
-from wordvec_utils import update, Conf
-
-
-# del ALLOW_EXTRA
-# del Dict, Num, even, orig_type
-
-# In[ ]:
-
-import utils as ut; reload(ut);
-from collections import deque
+# import utils as ut; reload(ut);
+# from collections import deque
 
 def ping():
     get_ipython().system('say done')
 
-
-#     bounds_check_window(1, toks, 4, len(toks))
-#     bounds_check_window_arr(0, toks, 4, len(toks))
-#     bounds_check_window(i, xs, winsize, N)
-# 
-#     s = sliding_window_jit_arr(samp_toks)
 
 # ### Norm
 
@@ -613,11 +609,6 @@ get_ipython().magic('timeit grad_norm(grd)')
 
 # In[ ]:
 
-get_ipython().magic('load_ext line_profiler')
-
-
-# In[ ]:
-
 # tks = np.array(all_text.split())
 # assert 'Albus_Dumbledore' in stoks
 # stoks, dropped = get_subsample(toks, thresh=THRESH)
@@ -634,7 +625,7 @@ vc = dv.feature_names_
 
 cnf = ut.AttrDict(
     eta=.1, min_eta=.0001, accumsec=0,  # norms={}, gradnorms={}, , norm=0
-    N=100, C=4, K=6, iter=0, thresh=15, epoch=0,
+    N=120, C=4, K=6, iter=0, thresh=15, epoch=0,
     term=dict(iters=None,
               secs=10
     ),
@@ -642,34 +633,27 @@ cnf = ut.AttrDict(
 )
 cnf = Conf(cnf)
 
-
-# In[ ]:
-
 W = wut.init_w(len(vc), cnf.N, seed=1)
 We = W.copy()
 
 
-#     with open('txt.txt','w') as f:
-#         f.write('\n'.join(all_text))
-# 
-#     !say done
-
 # ### Sgd
-
-# a = lambda: None
-# a.ct, a.sw, a.ns, a.lr = (count(cf.iter),
-#       sliding_window(iter_corpus, C=cf.C),
-#       z.partition(cf.C, neg_sampler),
-#       iter(learning_rates))
-# for _ in xrange(cf.term['iters']):
-#     next(a.ct)
-#     next(a.sw)
-#     next(a.ns)
-#     next(a.lr)
-# return
 
 # In[ ]:
 
+get_ipython().magic('load_ext line_profiler')
+
+
+# In[ ]:
+
+def grad_update(W, sub_ixs, eta, ns_grad=ns_grad):
+    Wsub = W[sub_ixs]
+    grad = ns_grad(Wsub)
+    gnorm = np.linalg.norm(grad)  # grad_norm
+    if gnorm > 5:  # clip gradient
+        grad /= gnorm
+    W[sub_ixs] = Wsub - eta * grad
+    
 @nopython
 def grad_update_jit(W, sub_ixs, eta):
     Wsub = W[sub_ixs]
@@ -678,48 +662,56 @@ def grad_update_jit(W, sub_ixs, eta):
     if gnorm > 5:  # clip gradient
         grad /= gnorm
     W[sub_ixs] = Wsub - eta * grad
-    
-def grad_update(W, sub_ixs, eta, ns_grad=ns_grad):
-    Wsub = W[sub_ixs]
-    grad = ns_grad(Wsub)
-    gnorm = np.linalg.norm(grad)  # grad_norm
-    if gnorm > 5:  # clip gradient
-        grad /= gnorm
-    W[sub_ixs] = Wsub - eta * grad
 
-
-# In[ ]:
-
-ngsamp = neg_sampler_jit(toki, cnf.K, type=list)
-fast_opts = dict(ns_grad_=ns_grad_jit, neg_sampler=ngsamp, sliding_window=sliding_window_jit)
-
-
-#     grad_update_jit(W, ixa_, .2)
-#     # grad_update(W, ixa_, .2, ns_grad=ns_grad_auto2)
-#     grad_update(W, ixa_, .2, ns_grad=ns_grad)
 
 # In[ ]:
 
 @nopython
-def contains(arr, x):
-    for e in arr:
-        if x == e:
-            return True
-    return False
+def grad_update_jit_pad(W, sub_ixs, eta, w=0, c=0):
+    """If focus or context word are contained in negative samples,
+    drop them before performing the grad update.
+    """
+    sub_ixs = nbu.remove_dupes(sub_ixs, w, c)
+    grad_update_jit(W, sub_ixs, eta)
+    
+def inner_update(W, negsamps, eta, w=0, c=0):
+    #print(negsamps, eta, w, c)
+    if (w in negsamps) or (c in negsamps):
+        negsamps = [x for x in negsamps if x not in {w, c}]
+    sub_ixs = np.array([w, c] + negsamps) # list(negsamps)
+    grad_update(W, sub_ixs, eta)
+    
+def check_padding(sampler, k, grad_update):
+    "Poor dependent type checker"
+    k_ = len(next(sampler))
+    padded = k_ == 2 + k
+    assert k_ in (2 + k, k), 'Length of samples should be either `k` or `k` + 2 if padded'
+    assert padded == (grad_update in padded_updates), 'Make sure sampler size agrees with grad_update'   
+    
+padded_updates = {grad_update_jit_pad}
+
+
+gen_npl = NegSampler(neg_sampler_np, toki, K=cnf.K, ret_type=list)
+numpy_opts = dict(ns_grad_=ns_grad, neg_sampler=gen_npl, sliding_window=sliding_window, grad_update=inner_update)
+
+ngsamp_pad = NegSampler(neg_sampler_jit_pad, toki, cnf.K, ret_type=np.ndarray, pad=2)
+fast_opts = dict(ns_grad_=ns_grad_jit, neg_sampler=ngsamp_pad, sliding_window=sliding_window_jit_arr, grad_update=grad_update_jit_pad)
+# gen_npl_pad = (np.concatenate([[len(toki) + 2] * 2, a]) for a in gen_npl)
+# fast_opts = dict(ns_grad_=ns_grad_jit, neg_sampler=gen_npl_pad, sliding_window=sliding_window_jit, grad_update=grad_update_jit_pad)
 
 
 # In[ ]:
 
-def sgd(W=None, corp=None, cf={}, ns_grad_=ns_grad, neg_sampler=None, vc=None, sliding_window=sliding_window):
+def sgd(W=None, corp=None, cf={}, ns_grad_=ns_grad, neg_sampler=None,
+        vc=None, sliding_window=sliding_window, grad_update=grad_update_jit_pad):
+    check_padding(neg_sampler, cf.K, grad_update)
+    
     if not os.path.exists(cf.dir):
         os.mkdir(cf.dir)
     st = time.time(); cf = Conf(cf)  #.copy()
-    # norms = dict(cf.norms); gradnorms = dict(cf.gradnorms)
     assert cf.N == W.shape[1] / 2, 'shape of W disagrees with conf'
-    # maxnorms = deque([], 5)
-
-    #normax = max(norms or [0]); gradnormax = max(gradnorms or [0]);
-    iter_corpus = corp[cf.iter:]
+    
+    iter_corpus = corp[cf.iter:] if cf.iter else corp
     learning_rates = np.linspace(cf.eta, cf.min_eta, len(iter_corpus))
     assert neg_sampler is not None, "Give me a negative sampler!"
     
@@ -729,92 +721,40 @@ def sgd(W=None, corp=None, cf={}, ns_grad_=ns_grad, neg_sampler=None, vc=None, s
                   learning_rates,
                  )
     iters = ut.timeloop(iters_, **cf.term)
-#     W2 = W.copy()
-#     W3 = W.copy()
+
     for i, (w, cont_), negsamp_lst, eta in iters:
         cont = [x for x in cont_ if x != w] if w in cont_ else cont_
         for c, negsamps in izip(cont, negsamp_lst):
-            if (w in negsamps) or (c in negsamps):
-                negsamps = [x for x in negsamps if x not in {w, c}]
-            sub_ixs = np.array([w, c] + negsamps) # list(negsamps)
-            
-            grad_update_jit(W, sub_ixs, eta)
-    #         grad_update(W2, sub_ixs, eta, ns_grad=ns_grad)
-    #         grad_update(W3, sub_ixs, eta, ns_grad=ns_grad_jit)
+            grad_update(W, negsamps, eta, w=w, c=c)
 
-    # assert np.allclose(W, W2)
     tdur = time.time() - st
-    print('{:.2f} mins'.format(tdur / 60))
     cf2 = update(cf, iter=i+1)  # , norms=norms, gradnorms=gradnorms
     cf2['accumsec'] += tdur
-    if not cf2.term:
-        DataFrame(W, index=vc).to_csv(os.path.join(cf2.dir, 'n{}_e{}.csv'.format(cf.N, cf.epoch)))
+    if not cf2.term and 0:
+        fn = join(cf2.dir, 'n{}_e{}.csv'.format(cf.N, cf.epoch))
+        DataFrame(W, index=vc).to_csv(fn)
         cf2['epoch'] += 1
         cf2 = update(cf2, iter=0)
     else:
-        print(i, 'iters')
-    # ping()
+        pass
+    #     print(i, 'iters')
     return W, cf2
 
+toka = np.array(toki)
+_ = sgd(W=We.copy(), corp=toka, cf=update(cnf, term={'iters': 1000}), **fast_opts)
+
+
+# # TODO: ~
 
 # In[ ]:
 
-ixa = next(gen_jita)
-ixl = next(gen_jitl)
-
-
-# In[ ]:
-
-ixas = ut.take(gen_jita, 10000)
-ixls = ut.take(gen_jitl, 10000)
-
-
-# In[ ]:
-
-get_ipython().magic('time s1 = sum((384 in a) or (3840 in a) for a in ixas)')
-get_ipython().magic('time s2 = sum(contains(a, 384) or contains(a, 3840) for a in ixas)')
-get_ipython().magic('time s3 = sum((384 in a) or (3840 in a) for a in ixls)')
-
-
-# In[ ]:
-
-s1, s2, s3
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-for a in ixas:
-    (384 in a) 
-
-
-# In[ ]:
-
-a
-
-
-# In[ ]:
-
-()
-
-
-# In[ ]:
-
-ixas
-
-
-# In[ ]:
-
-ixa
-
-
-# In[ ]:
-
-ixl
+_w1, _wpd = We.copy(), We.copy()
+for i in range(8):
+    _w1, _ = sgd(W=_w1.copy(), corp=toki, cf=update(cnf, term={'iters': 10000}), **numpy_opts) 
+    _wpd, _ = sgd(W=_wpd.copy(), corp=toki, cf=update(cnf, term={'iters': 10000}), **fast_opts)
+    
+    n1, n2 = np.linalg.norm(_w1), np.linalg.norm(_wpd)
+    print('{:.2f}; {:.2f}'.format(n1, n2))
 
 
 # In[ ]:
@@ -824,12 +764,72 @@ _ = sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 10000}), **fast_op
 
 # In[ ]:
 
-get_ipython().magic("lprun -T lp5.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 10000}), **fast_opts)")
+_ = sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 1000}), **fast_opts2) 
 
 
 # In[ ]:
 
-cnf
+np.linalg.norm(_w1)
+
+
+# In[ ]:
+
+np.linalg.norm(_wpd)
+
+
+# In[ ]:
+
+np.linalg.norm(_wpd2)
+
+
+# In[ ]:
+
+fast_opts
+
+
+# In[ ]:
+
+_ = sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 10000}), **fast_opts) 
+
+
+# In[ ]:
+
+sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 10000}), **numpy_opts)
+
+
+# In[ ]:
+
+_w1, _wpd = We.copy(), We.copy()
+get_ipython().magic("time _w1, _ = sgd(W=_w1, corp=toki, cf=update(cnf, term={'iters': 10000}), **numpy_opts)")
+get_ipython().magic("time _wpd, _ = sgd(W=_wpd, corp=toki, cf=update(cnf, term={'iters': 10000}), **fast_opts)")
+
+
+# In[ ]:
+
+get_ipython().magic('lprun -T lp5.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=update(cnf, term=trm), **numpy_opts)  # inner_update')
+
+
+# In[ ]:
+
+trm = {}
+trm = {'iters': 100000}
+
+
+# In[ ]:
+
+get_ipython().magic('lprun -T lp6.txt -s -f grad_update_jit sgd(W=We.copy(), corp=toki, cf=update(cnf, term=trm), **fast_opts)')
+
+
+# In[ ]:
+
+8.5 -> 12.5
+     
+
+
+# In[ ]:
+
+3.416416      8.6     35.5      grad = ns_grad_jit(Wsub)
+6.131119     15.4     93.2      grad_update_jit(W, sub_ixs, eta)
 
 
 # In[ ]:
@@ -839,66 +839,12 @@ get_ipython().magic('time res = sgd(W=We.copy(), corp=toki, cf=update(cnf, term=
 
 # In[ ]:
 
-gensim
+get_ipython().magic('time res = sgd(W=We.copy(), corp=toka, cf=update(cnf, term={}), **fast_opts)')
 
 
 # In[ ]:
 
-ns_grad_auto2 = mk_ns_grad_a(cnf.N)
 
-
-# In[ ]:
-
-@nopython
-def concat_jit(arr, *xs):
-    X = len(xs)
-    A = len(arr)
-    a2 = np.empty(A + X, dtype=np.uint32)
-    for i in xrange(X):
-        a2[i] = xs[i]
-        
-    for i in xrange(X, A + X):
-        a2[i] = arr[i - X]
-    return a2
-
-
-# In[ ]:
-
-negsamps
-
-
-# In[ ]:
-
-concat_jit(negsamps, w, c) == np.array([w, c] + negsamps)
-
-
-# In[ ]:
-
-get_ipython().magic('timeit concat_jit(negsamps, w, c)')
-
-
-# In[ ]:
-
-get_ipython().magic('timeit concat_jit(negsamps, w, c)')
-get_ipython().magic('timeit np.array([w, c] + negsamps)')
-get_ipython().magic('timeit np.concatenate([[w, c], negsampsa])')
-get_ipython().magic('timeit np.concatenate([[w, c], negsamps])')
-
-
-# In[ ]:
-
-np.concatenate([[w, c], negsampsa]) == np.array([w, c] + negsamps)
-
-
-# In[ ]:
-
-np.concatenate([[w, c], negsampsa])
-
-
-# In[ ]:
-
-negsampsa = np.array(negsamps)
-# %timeit np.array([w, c] + negsamps)
 
 
 # In[ ]:
@@ -1139,10 +1085,44 @@ gparams = dict(
 
 # In[ ]:
 
+def to_gensim_params(cnf, **kw):
+    gparams = dict(
+        size=cnf.N, # 80, #
+        alpha=cnf.eta,
+        min_alpha=cnf.min_eta,
+        window=cnf.C / 2,
+        sample=0,
+        negative=cnf.K,  #[5, 7, 10, 12, 15, 17], 0
+        sg=1,
+        # iter=4,
+    )
+    gparams.update( **kw)
+    return gparams
+    
+gparams = to_gensim_params(cnf)
+
+
+# In[ ]:
+
+Word2Vec(sen)
+
+
+# In[ ]:
+
 def ev(mod):
     ans = mod.accuracy('src/questions-words.txt', restrict_vocab=10000)
     sect = [d for d in ans if d['section'] == 'total']
     return sum([1 for d in sect for _ in d['correct']])
+
+
+# In[ ]:
+
+cnf
+
+
+# In[ ]:
+
+
 
 
 # In[ ]:
@@ -1765,6 +1745,11 @@ get_ipython().magic('pinfo Word2Vec')
 # In[ ]:
 
 gparams
+
+
+# In[ ]:
+
+toki = 
 
 
 # In[ ]:
