@@ -180,3 +180,20 @@ def contains(arr, x):
         if x == e:
             return True
     return False
+
+
+#Sliding window
+@nopython
+def bounds_check_window(i, xs: [int], winsize, N):
+    x = xs[i]
+    ix1 = max(0, i-winsize)
+    ix2 = min(N, i+winsize+1)
+    return x, xs[ix1:i] + xs[i + 1:ix2]
+
+
+@nopython
+def bounds_check_window_arr(i, xs: np.array, winsize, N):
+    x = xs[i]
+    ix1 = max(0, i-winsize)
+    ix2 = min(N, i+winsize+1)
+    return x, concat(xs[ix1:i], xs[i + 1:ix2])

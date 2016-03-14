@@ -2,14 +2,14 @@
 # coding: utf-8
 
 # ## Word2vec
-# A difficulty of working with text data is that using each word of a large vocabulary as a feature requires working with large dimensions. While sparse matrix data structures allow for tractable manipulation of these vectors, there are whole classes of algorithms that do not work well or at all on sparse high dimensional data. 
+# A difficulty of working with text data is that using each word of a large vocabulary as a feature requires working with large dimensions. While sparse matrix data structures make manipulating these vectors tractable, there are whole classes of algorithms that do not work well or at all on sparse high dimensional data. 
 # 
 # A recent development called word2vec allows for words to be represented as dense vectors of much smaller dimensions (on the order of $\mathbb{R}^{100}$). This algorithm yields representations of words such that words appearing in similar contexts will lie close to one another in this low dimensional vector space. Another interesting feature of this algorithm is that the representation does a good job at inferring analogies. [TODO: ex?]
 # 
 # At a high level, the skip-gram flavor of this algorithm looks at a word and its surrounding  words, and tries to maximize the probability that the word's vector representation predicts those actual words occurring around it. If it is trained on the phrase *the quick brown fox jumps*, the word2vec input representation of the word *brown* would yield a high dot product with the output vectors for the words *the, quick, fox* and *jumps*.
 # 
 # ## Speed
-# I'm constantly trying to navigate the trade-off from simultaneously maximizing my laziness and the speed of my code. I originally wanted to experiment with using [autograd](https://github.com/HIPS/autograd) to write my gradient updates for me. As nice as it was to not have to write the gradient calculation out, this pretty quickly bubbled to the top as one of the major bottlenecks, leaving me to write the gradients manually by faster means.
+# I'm constantly trying to navigate the trade-off from simultaneously maximizing my laziness and the speed of my code. I originally wanted to experiment with using [autograd](https://github.com/HIPS/autograd) to write my gradient updates for me, and as nice as it was to not have to write the gradient calculation out, this pretty quickly bubbled to the top as one of the major bottlenecks, leaving me to write the gradients manually by faster means.
 # 
 # While numpy gives a big speed boost over plain python, cython (used by the go-to word2vec implementation, [gensim](https://github.com/piskvorky/gensim)), gives a major performance improvement beyond numpy, with speeds typically approaching code written in C. Part of the cost of this speed up is that writing in Cython, while more pythonic than C, seems to require additional type annotations and syntactic elements, making it less readable (at least for me). My goal here has been to make word2vec as close to gensim's cython implementation as possible while sticking to Python, so I settled on Numba, a numeric JIT compiler that uses LLVM and supports a subset of Python and numpy.
 # 
@@ -46,12 +46,6 @@ from numba import jit
 nopython = jit(nopython=True)
 
 
-# In[ ]:
-
-## Subsample
-# THRESH = 0.15
-
-
 # ## Objective functions
 # 
 # The standard skip-gram objective function comes from taking the softmax probability of each of the actual context words dotted with the input ($u_{c,j^*_c}$) and multiplying them together:
@@ -83,13 +77,11 @@ def skipgram_likelihood(wi, cwds, dv=None):
 
 
 # The return value of `logloss` should pretty clearly resembles the equation above.
-#  
-# To train word2vec, the gradient is actually more important than the actual function, but for the standard skip-gram architecture, both are relatively straightforward. In an earlier iteration, I used the python [autograd](https://github.com/HIPS/autograd) library to try and cheat having to manually write the derivative function. Unfortunately, it quickly became apparent that this was the chief bottleneck of the gradient descent routine, so I resorted to manually coding the derivatives like an animal.
 # 
 # # Negative sampling
 # ## Gradient
 # 
-# After reading a bit more about word2vec, I found out about an extension to the skip-gram model called negative sampling that efficiently generates better word vectors. The basic idea is that in addition to training a word vector with $C$ words that *do* appear around it, the vector should also be trained with words randomly chosen from the rest of the text, as negative examples of what the vector should *not* predict in its context. 
+# After reading a bit more about word2vec, I found out about an extension to the skip-gram model called negative sampling that efficiently generates better word vectors. The basic idea is that in addition to training a word vector with $C$ words that *do* appear around it, the vector should also be trained with $K$ words randomly chosen from the rest of the text, as negative examples of what the vector should *not* predict in its context. 
 # 
 # As a side-note to keep up with the notation taken from [word2vec Parameter Learning Explained](http://www-personal.umich.edu/~ronxin/pdf/w2vexp.pdf), the term $\boldsymbol v_{w_O}'$ refers to a word vector ($\boldsymbol v$) that is from the output vector matrix ($\boldsymbol v'$) representing an output word $w_O$. Notation aside, the gradient for the negative sampling extension is relatively straightforward. For each true context word vector $\boldsymbol v_{w_O}'$ appearing close to the input word vector $h$, we'll draw $K$ word vectors $\boldsymbol v_{w_i}$ at random from the corpus. The objective is computed by adding the log of the sigmoid of the word vector dotted with either the true or false context word (the negative samples are negated): 
 
@@ -107,23 +99,17 @@ def skipgram_likelihood(wi, cwds, dv=None):
 #          = \sigma(\boldsymbol v_{w_j}^{\prime T} \boldsymbol h) -t_j.
 # $$
 # 
-# The numpy gradient is below as `ns_grad`; the numba gradient `ns_grad_jit` is similar, but all of the functions used in a JIT'd function must also be numba-JIT'd, so I moved them all out to another module. 
+# The numpy gradient is below as `ns_grad`; the numba gradient `ns_grad_jit` is similar, but all of the functions used in a JIT'd function must also be numba-JIT'd, so I moved them all out to the `numba_utils` module. 
 # 
+# The schema I adopted to calculate gradients takes a subset of the matrix formed by concatenating the input and output parameter matrices together ($W || W'$). If the vector dimension $N$ is 100, and there are 1000 words in the vocabulary, this matrix will be in $\mathbb{R}^{1000 \times 200}$. The gradient function takes a subset of this matrix with $K + 2$ rows. The first row represents the input word, the next represents the true context word, and the rest represent the $K$ negative samples.
+# 
+# Note that since the first vector is from the input parameter matrix $W$, and these functions are operating on the input and output matrices concatenated, we only care about the first $N$ entries of the first row. Similarly, we only care about the last $N$ entries for the rest of the output vectors. This schema should be more clear from the `get_vecs1` function below that extracts the vectors from the relevant subset of the concatenated parameter matrices. This also means that for the gradients of the concatenated matrix, half of the entries in each row will be zero.
 
 # In[ ]:
 
 getNall = lambda W: W.shape[1] // 2
 gen_labels = lambda negsamps: [1] + [0] * len(negsamps)
 sig = lambda x: 1 / (1 + np.exp(-x))
-
-def get_vecs1_(Wall, w_ix: int=0, vo_ix: [int]=1, negsamp_ixs: [int]=None):
-    if negsamp_ixs is None:
-        negsamp_ixs = range(2, len(Wall))
-    N = getNall(Wall)
-    h = Wall[w_ix, :N]  # ∈ ℝⁿ
-    vwo = Wall[vo_ix, N:]
-    negsamps = Wall[negsamp_ixs, N:]
-    return h, vwo, negsamps
 
 
 def get_vecs1(Wsub):
@@ -151,7 +137,7 @@ def ns_grad(Wsub):
 
 
 # ## Gradient check
-# The following gradient checking functionality based on [the UFLDL tutorial](http://ufldl.stanford.edu/tutorial/supervised/DebuggingGradientChecking/) uses simple calculus to ensure that gradients are working as expected.
+# The following gradient checking functionality based on [the UFLDL tutorial](http://ufldl.stanford.edu/tutorial/supervised/DebuggingGradientChecking/) uses simple calculus to ensure that the gradients are working as expected.
 
 # In[ ]:
 
@@ -180,7 +166,6 @@ def J(Wsub, loss=ns_loss):
     h, vwo, vwi_negs = get_vecs1(Wsub)
     # h, vwo, vwi_negs = Wsub[0, :N], Wsub[1, N:], Wsub[range(2, len(Wsub)), N:]
     return loss(h, vwo, vwi_negs)
-    return ns_loss_vec(h, vwo, vwi_negs)
 
 def check_grad_(W, i: int=None, j: int=None, eps=1e-6, J: 'Callable'=None):
     "From eqn at http://ufldl.stanford.edu/tutorial/supervised/DebuggingGradientChecking/"
@@ -200,10 +185,23 @@ def approx_grad(W, J=J):
 
 # In[ ]:
 
+for _ in range(80): print('.', end='')
+
+
+# In[ ]:
+
 def siga(x):
     return 1 / (1 + npa.exp(-x))
 
 def mk_ns_loss_a(N):
+    """Return a loss function that works on an N-dimensional
+    representation. This takes a single argument, the subset of
+    the input and output matrices that correspond to the input
+    word (first row), true contest word (second row) and K
+    negative samples (rest of the rows). Since it takes a
+    single argument, the gradient can automatically be
+    calculated by autograd"
+    """
     def ns_loss_a(Wsub):
         h = Wsub[0, :N]
         vwo = Wsub[1, N:]
@@ -232,6 +230,8 @@ ns_grad_auto = mk_ns_grad_a(N_)
 # In[ ]:
 
 def grad_close(f, grd=ns_grad(Wsub)):
+    """Check that a given gradient function result agrees
+    with ns_grad. Print out norm of the difference."""
     grd2 = f(Wsub)
     print('√ Diff: {}'.format(np.linalg.norm(grd - grd2)))
     return np.allclose(grd, grd2)
@@ -258,6 +258,8 @@ get_ipython().magic('timeit ns_grad_jit(Wsub)   #   6.14 µs per loop')
 # ### Draw negative samples
 # 
 # As a foreshadowing of performance bottlenecks that my original implementation ran into, I have a few versions of a function that chooses words from the text at random, that increase in performance. They all draw words randomly according to the unigram$^{3/4}$ distribution.
+# 
+# The sampler I ended up going with, `neg_sampler_jit_pad`, is padded with a couple of dummy entries. I originally drew some negative samples `negsamps` from one of these generators, and then created the array to index $W$ by prepending `negsamps` with `w` and `c`, copying these to a new array. Usually this is ok, but I found that copying `negsamps` to a new array in the inner loop caused a noticeable delay, so I wrote `neg_sampler_jit_pad` to return 2 extra empty elements at the beginning to be able to insert `w` and `c` inplace without copying a new array.
 
 # In[ ]:
 
@@ -281,8 +283,13 @@ def unigram(txt, pow=.75):
         assert (ctsdf.Word == ctsdf.index).all()
     return ctsdf
 
+def cum_prob_uni(xs, pow=.75):
+    ug = unigram(xs, pow=pow)
+    return ug.Prob.cumsum() / ug.Prob.sum()
+
 
 def neg_sampler_pd(xs, K, pow=.75):
+    "Simplest, but slowest sampler using built-in pandas sample function"
     ug = unigram(xs, pow=pow)
     for seed in count():
         yield ug.Word.sample(n=K, weights=ug.Prob, random_state=seed, replace=True)
@@ -310,8 +317,7 @@ def neg_sampler_np(xs, K, cache_len=1000, use_seed=False, pow=.75, ret_type=np.n
 
 
 def neg_sampler_jit(xs, K, pow=.75, ret_type=list):
-    ug = unigram(xs, pow=pow)
-    cum_prob = ug.Prob.cumsum() / ug.Prob.sum()
+    cum_prob = cum_prob_uni(xs, pow=pow)
     sampler = {
         list:     nbu.neg_sampler_jitl_,
         np.ndarray: nbu.neg_sampler_jita_,
@@ -319,8 +325,7 @@ def neg_sampler_jit(xs, K, pow=.75, ret_type=list):
     return sampler(cum_prob.values, K)
 
 def neg_sampler_jit_pad(xs, K, pow=.75, ret_type=list, pad=0):
-    ug = unigram(xs, pow=pow)
-    cum_prob = ug.Prob.cumsum() / ug.Prob.sum()
+    cum_prob = cum_prob_uni(xs, pow=pow)
     sampler = {
         list:     nbu.neg_sampler_jitl_pad,
         np.ndarray: nbu.neg_sampler_jita_pad,
@@ -328,11 +333,9 @@ def neg_sampler_jit_pad(xs, K, pow=.75, ret_type=list, pad=0):
     return sampler(cum_prob.values, K, pad=pad)
 
 
-# gen = sample_(ug.Cum_prob.values, 8)
-
 # ### Check distributions
 # 
-# And just as a sanity check that the different implementations do the same thing, I randomly generate words according to how frequently occur in the text with each of the samplers and scatter-plot them against each other, hoping that they mostly lie on $y=x$. 
+# Just as a sanity check that the different implementations do the same thing, I randomly generate words according to how frequently they occur in the text with each of the samplers and scatter-plot them against each other to check that they mostly lie on $y=x$. 
 
 # In[ ]:
 
@@ -349,28 +352,9 @@ smtok = le.fit_transform(some_text)
 
 # In[ ]:
 
-init_sampler = lambda ns: len(next(ns)) and ns
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-kw = {'1':1}
-dict(a='b', **kw)
-
-
-# In[ ]:
-
-dict
-
-
-# In[ ]:
-
 class NegSampler:
+    """Container for the sampler generator functions.
+    This keeps track of the number of samples $K$ and the padding."""
     def __init__(self, sampler, toks, K=None, ret_type=None, pad=None, nxt=True, **kw):
         if pad is not None:
             kw['pad'] = pad
@@ -400,16 +384,6 @@ class NegSampler:
 
 # In[ ]:
 
-gen_jita_pad = NegSampler(neg_sampler_jit_pad, smtok, K=8, ret_type=np.ndarray, pad=2)
-
-
-# In[ ]:
-
-gen_jita_pad
-
-
-# In[ ]:
-
 gen_jitl =     NegSampler(neg_sampler_jit, smtok, 8, ret_type=list)
 gen_jitl_pad = NegSampler(neg_sampler_jit_pad, smtok, 8, ret_type=list, pad=2)
 gen_jita =     NegSampler(neg_sampler_jit, smtok, 8, ret_type=np.ndarray)
@@ -417,20 +391,6 @@ gen_jita_pad = NegSampler(neg_sampler_jit_pad, smtok, 8, ret_type=np.ndarray, pa
 gen_npa =      NegSampler(neg_sampler_np, smtok, 8, ret_type=np.ndarray)
 gen_npl =      NegSampler(neg_sampler_np, smtok, 8, ret_type=list)
 gen_pd =       NegSampler(neg_sampler_pd, smtok, 8)
-
-
-# In[ ]:
-
-gen_jita_pad = neg_sampler_jit_pad(smtok, 8, type=np.array, pad=2)
-# gen_jita2 = neg_sampler_jit_pad(smtok, 8, type=np.array, pad=2)
-gen_jitl = neg_sampler_jit(smtok, 8, type=list)
-gen_jitl2 = neg_sampler_jit_pad(smtok, 8, type=list, pad=2)
-gen_npa = neg_sampler_np(smtok, 8, type=np.array)
-gen_npl = neg_sampler_np(smtok, 8, type=list)
-gen_pd = neg_sampler_pd(smtok, 8)
-del gen_jita_pad, gen_jitl, gen_jitl2, gen_npa, gen_npl, gen_pd
-# next(gen_jitl2); next(gen_jita2);
-# next(gen_jita_pad); next(gen_jita); next(gen_jitl); next(gen_npa); next(gen_npl); next(gen_pd);
 
 
 # In[ ]:
@@ -474,8 +434,12 @@ plot_dist(xcol='Numpy', subplt=132)
 plot_dist(xcol='Pandas', subplt=133)
 
 
+# As these plots show, the samplers seem to be drawing words according to the expected distribution. The pandas sampler was so slow that I had to reduce the number of draws by an order of magnitude, so the plot is a lot noisier than the others, but still roughly on track.
+# 
 # ### Sliding window
 # It turned out another significant bottleneck of the gradient descent routine was the sliding window code that iterates over the entire corpus, yielding a word and its context words at each point. 
+# 
+# For the first few words, there are less than $C$ surrounding context words, so some checking is required. For the numba function, I used a specialized iterator at the beginning and end to avoid checking the max and min indices at every step.
 
 # In[ ]:
 
@@ -485,24 +449,14 @@ del smtok
 # In[ ]:
 
 def sliding_window(xs, C=4, start_pos=0):
-    """Iterates through corpus, yielding input word
+    """Iterate through corpus, yielding input word
     and surrounding context words"""
-    #assert isinstance(xs, list)
     winsize = C // 2
     N = len(xs)
     for i, x in enumerate(xs, start_pos):
         ix1 = max(0, i-winsize)
         ix2 = min(N, i+winsize+1)
         yield x, xs[ix1:i] + xs[i + 1:ix2]
-
-
-@nopython
-def bounds_check_window(i, xs: [int], winsize, N):
-    x = xs[i]
-    ix1 = max(0, i-winsize)
-    ix2 = min(N, i+winsize+1)
-    return x, xs[ix1:i] + xs[i + 1:ix2]
-
 
 @nopython
 def sliding_window_jit(xs, C=4):
@@ -511,7 +465,7 @@ def sliding_window_jit(xs, C=4):
     winsize = C // 2
     N = len(xs)
     for i in xrange(winsize):
-        yield bounds_check_window(i, xs, winsize, N)
+        yield nbu.bounds_check_window(i, xs, winsize, N)
     for i in xrange(winsize, N-winsize):
         context = []
         for j in xrange(i-winsize, i+winsize+1):
@@ -519,15 +473,7 @@ def sliding_window_jit(xs, C=4):
                 context.append(xs[j])
         yield xs[i], context  # xs[i-winsize:i] + xs[i + 1:i+winsize+1]
     for i in xrange(N-winsize, N):
-        yield bounds_check_window(i, xs, winsize, N)
-
-
-@nopython
-def bounds_check_window_arr(i, xs: np.array, winsize, N):
-    x = xs[i]
-    ix1 = max(0, i-winsize)
-    ix2 = min(N, i+winsize+1)
-    return x, nbu.concat(xs[ix1:i], xs[i + 1:ix2])
+        yield nbu.bounds_check_window(i, xs, winsize, N)
 
 @nopython
 def sliding_window_jit_arr(xs, C=4):
@@ -536,17 +482,15 @@ def sliding_window_jit_arr(xs, C=4):
     winsize = C // 2
     N = len(xs)
     for i in xrange(winsize):
-        yield bounds_check_window_arr(i, xs, winsize, N)
+        yield nbu.bounds_check_window_arr(i, xs, winsize, N)
     for i in xrange(winsize, N-winsize):
         context = np.empty(C, dtype=np.int64)
         for ci in xrange(winsize):
             context[ci] = xs[i - winsize + ci]
             context[winsize + ci] = xs[i + 1 + ci]
-#             if j != i:
-#                 context[ci] = xs[i - winsize + ci]
-        yield xs[i], context  # xs[i-winsize:i] + xs[i + 1:i+winsize+1]
+        yield xs[i], context
     for i in xrange(N-winsize, N):
-        yield bounds_check_window_arr(i, xs, winsize, N)
+        yield nbu.bounds_check_window_arr(i, xs, winsize, N)
 
 
 # In[ ]:
@@ -565,20 +509,8 @@ get_ipython().magic('timeit run_window(sliding_window_jit_arr, toks=samp_toks)')
 # assert run_window(sliding_window) == run_window(sliding_window_jit) == run_window(sliding_window_jit_arr)
 
 
-# ## Gradient descent
-# - conf
-# For the gradient descent routine, I'm passing all the hyper-parameters through a configuration dictionary, validated by [voluptuous](https://pypi.python.org/pypi/voluptuous). This allows specification of things like the context window size, learning rate, number of negative samples and size of the word vectors. Check the utility file where it's defined for details on the parameter significance.
-
-# In[ ]:
-
-# import utils as ut; reload(ut);
-# from collections import deque
-
-def ping():
-    get_ipython().system('say done')
-
-
 # ### Norm
+# Since I'm using the concatenated input and output matrix, half of the `w, c, negsamps` submatrix entries are 0. A specialized norm function gives about an order of magnitude speedup over the numpy one.
 
 # In[ ]:
 
@@ -607,11 +539,11 @@ get_ipython().magic('timeit np.linalg.norm(grad_norm(grd))')
 get_ipython().magic('timeit grad_norm(grd)')
 
 
-# In[ ]:
+# ## Gradient descent
+# 
+# For the gradient descent routine, I'm passing all the hyper-parameters through a configuration dictionary, validated by [voluptuous](https://pypi.python.org/pypi/voluptuous). This allows specification of things like the context window size, learning rate, number of negative samples and size of the word vectors. Check the utility file where it's defined for details on the meanings of the parameters
 
-# tks = np.array(all_text.split())
-# assert 'Albus_Dumbledore' in stoks
-# stoks, dropped = get_subsample(toks, thresh=THRESH)
+# In[ ]:
 
 all_text = list(brown.words())
 dv = WordVectorizer().fit(all_text)
@@ -621,10 +553,8 @@ vc = dv.feature_names_
 
 # In[ ]:
 
-# reload(wut);
-
 cnf = ut.AttrDict(
-    eta=.1, min_eta=.0001, accumsec=0,  # norms={}, gradnorms={}, , norm=0
+    eta=.1, min_eta=.0001, accumsec=0,
     N=120, C=4, K=6, iter=0, thresh=15, epoch=0,
     term=dict(iters=None,
               secs=10
@@ -638,6 +568,7 @@ We = W.copy()
 
 
 # ### Sgd
+# One final speedup I got was from putting the entire inner loop routine into a numba JIT'd function, instead of calling each JIT'd function separately. Numba seems to reduce some of python's function call overhead, as well as the numpy indexing. For some reason, indexing into a numpy array (to calculate the gradient and then update the original matrix) still ended up being a significant factor, though numba seemed to reduce it.
 
 # In[ ]:
 
@@ -695,10 +626,12 @@ gen_npl = NegSampler(neg_sampler_np, toki, K=cnf.K, ret_type=list)
 numpy_opts = dict(ns_grad_=ns_grad, neg_sampler=gen_npl, sliding_window=sliding_window, grad_update=inner_update)
 
 ngsamp_pad = NegSampler(neg_sampler_jit_pad, toki, cnf.K, ret_type=np.ndarray, pad=2)
-fast_opts = dict(ns_grad_=ns_grad_jit, neg_sampler=ngsamp_pad, sliding_window=sliding_window_jit_arr, grad_update=grad_update_jit_pad)
+fast_opts = dict(ns_grad_=ns_grad_jit, neg_sampler=ngsamp_pad, sliding_window=sliding_window_jit, grad_update=grad_update_jit_pad)
 # gen_npl_pad = (np.concatenate([[len(toki) + 2] * 2, a]) for a in gen_npl)
 # fast_opts = dict(ns_grad_=ns_grad_jit, neg_sampler=gen_npl_pad, sliding_window=sliding_window_jit, grad_update=grad_update_jit_pad)
 
+
+# And finally, here is the full gradient descent function put together.
 
 # In[ ]:
 
@@ -741,7 +674,7 @@ def sgd(W=None, corp=None, cf={}, ns_grad_=ns_grad, neg_sampler=None,
     return W, cf2
 
 toka = np.array(toki)
-_ = sgd(W=We.copy(), corp=toka, cf=update(cnf, term={'iters': 1000}), **fast_opts)
+_ = sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 1000}), **fast_opts)
 
 
 # # TODO: ~
@@ -765,26 +698,6 @@ _ = sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 10000}), **fast_op
 # In[ ]:
 
 _ = sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 1000}), **fast_opts2) 
-
-
-# In[ ]:
-
-np.linalg.norm(_w1)
-
-
-# In[ ]:
-
-np.linalg.norm(_wpd)
-
-
-# In[ ]:
-
-np.linalg.norm(_wpd2)
-
-
-# In[ ]:
-
-fast_opts
 
 
 # In[ ]:
@@ -856,11 +769,6 @@ _ = sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 10000}), **fast_op
 
 (w in negsamps) or (c in negsamps)
 set([w, c]) & set(negsamps)
-
-
-# In[ ]:
-
-negsamps, w, c = [34096, 48494, 33883, 20513, 16756, 36496], 17591, 8187
 
 
 # In[ ]:
