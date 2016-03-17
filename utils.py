@@ -1,11 +1,15 @@
 from collections import namedtuple, OrderedDict, defaultdict
 from functools import reduce, partial
+from importlib import reload
 from itertools import repeat, islice  # , filterfalse, tee
 import numpy as np
 import pandas as pd
 from pandas import DataFrame
 import operator as op
+from os.path import join
+import os
 import re
+import site
 import toolz.curried as z
 import time
 
@@ -242,6 +246,46 @@ def get_multi_case(ks, txt, thresh=.9):
     )
     return {diffcase: phrase2wd(k) for k in casedata.query('Ratio < @thresh').Word
         for diffcase in set(find_icase(k))}
+
+
+# Gensim fast/slow mode
+[sdir] = site.getsitepackages()
+gensim_dir = join(sdir, 'gensim/models')
+fast_file = join(gensim_dir, 'word2vec_fast.py')
+slow_file = join(gensim_dir, 'word2vec_slow.py')
+wv_file = join(gensim_dir, 'word2vec.py')
+
+
+def mk_gensim_sym(slow=False):
+    dst = slow_file if slow else fast_file
+    if os.path.islink(wv_file):
+        os.remove(wv_file)
+
+    elif os.path.exists(wv_file):
+        raise Exception('{} not a symlink!'.format(wv_file))
+    os.symlink(dst, wv_file)
+    #print(dst)
+    return True
+
+
+def reset_gensim(slow=False, gensim=None):
+    mk_gensim_sym(slow=slow)
+    reload(gensim.models.word2vec)
+
+
+def to_gensim_params(cnf, **kw):
+    gparams = dict(
+        size=cnf.N, # 80, #
+        alpha=cnf.eta,
+        min_alpha=cnf.min_eta,
+        window=cnf.C / 2,
+        sample=0,
+        negative=cnf.K,  #[5, 7, 10, 12, 15, 17], 0
+        sg=1,
+        # iter=4,
+    )
+    gparams.update( **kw)
+    return gparams
 
 
 phrase2wd = lambda x: '_'.join(re.split(r'[ -]', x))

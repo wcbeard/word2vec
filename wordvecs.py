@@ -20,6 +20,10 @@
 # - create array
 # - index with list
 
+# # Begin
+# 
+# [td](#TODO:-~)
+
 # In[ ]:
 
 get_ipython().run_cell_magic('javascript', '', "var csc = IPython.keyboard_manager.command_shortcuts\ncsc.add_shortcut('Ctrl-k','ipython.move-selected-cell-up')\ncsc.add_shortcut('Ctrl-j','ipython.move-selected-cell-down')\ncsc.add_shortcut('Shift-m','ipython.merge-selected-cell-with-cell-after')")
@@ -555,7 +559,7 @@ vc = dv.feature_names_
 
 cnf = ut.AttrDict(
     eta=.1, min_eta=.0001, accumsec=0,
-    N=120, C=4, K=6, iter=0, thresh=15, epoch=0,
+    N=100, C=4, K=6, iter=0, thresh=15, epoch=0,
     term=dict(iters=None,
               secs=10
     ),
@@ -616,6 +620,8 @@ def check_padding(sampler, k, grad_update):
     "Poor dependent type checker"
     k_ = len(next(sampler))
     padded = k_ == 2 + k
+    assert k_ == sampler.pad + sampler.K
+    assert k == sampler.K
     assert k_ in (2 + k, k), 'Length of samples should be either `k` or `k` + 2 if padded'
     assert padded == (grad_update in padded_updates), 'Make sure sampler size agrees with grad_update'   
     
@@ -677,7 +683,77 @@ toka = np.array(toki)
 _ = sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 1000}), **fast_opts)
 
 
+# ### Benchmarks
+
+# In[ ]:
+
+_w1, _wpd = We.copy(), We.copy()
+tm = {'iters': 10000}
+tm = {}
+
+
+# In[ ]:
+
+get_ipython().magic('time _w1, _ = sgd(W=_w1, corp=toki, cf=update(cnf, term=tm), **numpy_opts)')
+
+
+# In[ ]:
+
+get_ipython().system('say done')
+
+
+# In[ ]:
+
+cnf
+
+
+# In[ ]:
+
+get_ipython().magic('time _wpd, _ = sgd(W=_wpd, corp=toki, cf=update(cnf, term=tm), **fast_opts)')
+
+
+# ### Gensim
+
+# In[ ]:
+
+import gensim
+from gensim.models.word2vec import Word2Vec
+
+
+# In[ ]:
+
+gparams = ut.to_gensim_params(cnf)
+
+
+# In[ ]:
+
+ut.reset_gensim(slow=True, gensim=gensim)
+assert gensim.models.word2vec.FAST_VERSION == -1
+
+
+# In[ ]:
+
+get_ipython().magic('time gen_slow = Word2Vec(brown.sents(), **gparams)')
+
+
+# In[ ]:
+
+ut.reset_gensim(slow=False, gensim=gensim)
+assert gensim.models.word2vec.FAST_VERSION == 1
+
+
+# In[ ]:
+
+get_ipython().magic('time gen_fast = Word2Vec(brown.sents(), **gparams)')
+
+
+# In[ ]:
+
+get_ipython().system('say done')
+
+
 # # TODO: ~
+# [#Begin](#Begin)
 
 # In[ ]:
 
@@ -712,25 +788,18 @@ sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 10000}), **numpy_opts)
 
 # In[ ]:
 
-_w1, _wpd = We.copy(), We.copy()
-get_ipython().magic("time _w1, _ = sgd(W=_w1, corp=toki, cf=update(cnf, term={'iters': 10000}), **numpy_opts)")
-get_ipython().magic("time _wpd, _ = sgd(W=_wpd, corp=toki, cf=update(cnf, term={'iters': 10000}), **fast_opts)")
-
-
-# In[ ]:
-
 get_ipython().magic('lprun -T lp5.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=update(cnf, term=trm), **numpy_opts)  # inner_update')
 
 
 # In[ ]:
 
 trm = {}
-trm = {'iters': 100000}
+# trm = {'iters': 100000}
 
 
 # In[ ]:
 
-get_ipython().magic('lprun -T lp6.txt -s -f grad_update_jit sgd(W=We.copy(), corp=toki, cf=update(cnf, term=trm), **fast_opts)')
+get_ipython().magic('lprun -T lp6.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=update(cnf, term=trm), **fast_opts)')
 
 
 # In[ ]:
@@ -767,125 +836,6 @@ _ = sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 10000}), **fast_op
 
 # In[ ]:
 
-(w in negsamps) or (c in negsamps)
-set([w, c]) & set(negsamps)
-
-
-# In[ ]:
-
-@nopython
-def ix_jit(W, ixs):
-    return W[ixs]
-
-def ix_jit_l2(W, ixs: [int]):
-    return ix_jit(W, np.array(ixs))
-
-@nopython
-def ix_jit_l(W, ixs: [int]):
-    n = len(ixs)
-    ixs_a = np.empty(n, dtype=np.int32)
-    for i in xrange(n):
-        ixs_a[i] = ixs[i]
-    return W[ixs_a]
-
-@nopython
-def ix_jit2(W, ixs):
-    m, n = W.shape
-    I = len(ixs)
-    res = np.empty((I, n))
-    for i in xrange(I):
-        for j in xrange(n):
-            res[i, j] = W[ixs[i], j]
-    return res
-
-
-# In[ ]:
-
-ix_jit_l(W, list(ixs))
-
-
-# In[ ]:
-
-ixsles = map(list, nr.randint(0, len(W), size=(100000, 10)))
-ixsaes = nr.randint(0, len(W), size=(100000, 10))
-ixl = ixses[0]
-ixa = np.array(ixl)
-
-
-# In[ ]:
-
-from py.test import raises
-import numba
-
-
-# In[ ]:
-
-def same_ix(f, ix):
-    assert (W[ix] == f(W, ix)).all()
-
-
-# In[ ]:
-
-same_ix(ix_jit, ixa)
-with raises(numba.TypingError):
-    same_ix(ix_jit, ixl)
-
-same_ix(ix_jit2, ixa)
-same_ix(ix_jit2, ixl)
-same_ix(ix_jit_l, ixl)
-same_ix(ix_jit_l2, ixl)
-
-
-# In[ ]:
-
-def bench_ix(ixa, ixl):
-    W[ixa]
-    W[ixl]
-
-
-# In[ ]:
-
-assert (W[ixa] == ix_jit(W, ixa)).all()
-assert (W[ixa] == ix_jit2(W, ixa)).all()
-assert (W[ixa] == ix_jit2(W, ixl)).all()
-assert (W[ixa] == ix_jit_l(W, ixl)).all()
-
-
-# In[ ]:
-
-get_ipython().magic('time for ixl_ in ixsles: 1')
-get_ipython().magic('time for ixa_ in ixsaesl: 1')
-
-
-# In[ ]:
-
-get_ipython().magic('time for ixl_ in ixsles: W[ixl_]')
-get_ipython().magic('time for ixa_ in ixsaesl: W[ixa_]')
-
-
-# In[ ]:
-
-get_ipython().magic('time for ixl_ in ixses: ix_jit2(W, ixl_)')
-get_ipython().magic('time for ixl_ in ixses: ix_jit_l(W, ixl_)')
-get_ipython().magic('time for ixl_ in ixses: W[ixl_]')
-get_ipython().magic('time for ixl_ in ixses: W[ixl_]')
-get_ipython().magic('time for ixl_ in ixses: ix_jit_l2(W, ixl_)')
-get_ipython().magic('time for ixl_ in ixses: ix_jit(W, np.array(ixl_))')
-
-
-# In[ ]:
-
-get_ipython().magic('timeit W[ixs]')
-get_ipython().magic('timeit ix_jit(W, ixs)')
-
-
-# In[ ]:
-
-ix_jit
-
-
-# In[ ]:
-
 sgd(W=We.copy(), corp=toki, cf=update(cnfe, term={'iters': 10000}), **kw)
 
 
@@ -898,48 +848,17 @@ get_ipython().magic("lprun -T lp.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=up
 
 # In[ ]:
 
-ixs = [ 1, 4, 7, 99, 486, 263, 924]
-w1, w2 = wtst.copy(), wtst.copy()
-# w1, w2 = wtst[ixs].copy(), wtst[ixs].copy()
-gr = ns_grad(w1[ixs])
-
-
-# In[ ]:
-
-get_ipython().magic('timeit ineg(w1, ixs, gr)')
-get_ipython().magic('timeit inegp(w2, ixs, gr)')
-
-
-# In[ ]:
-
-cnfe = update(cnf, C=4, iter=0, term=dict(), N=100,  dir='cache/v12', epoch=0)
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
 for i in range(20):
     print('Epoch {}'.format(cnfe.epoch))
     We2, cnfe = sgd(W=We.copy(), corp=toki, cf=update(cnfe, term=dict()), **fast_opts)
     break
-    
 
 
 # ## Corpus
 
 # In[ ]:
 
-
-
-
-# In[ ]:
-
 import nltk; reload(nltk)
-# , reuters
 from gensim.models import Word2Vec
 
 
@@ -993,21 +912,7 @@ gparams = dict(
 
 # In[ ]:
 
-def to_gensim_params(cnf, **kw):
-    gparams = dict(
-        size=cnf.N, # 80, #
-        alpha=cnf.eta,
-        min_alpha=cnf.min_eta,
-        window=cnf.C / 2,
-        sample=0,
-        negative=cnf.K,  #[5, 7, 10, 12, 15, 17], 0
-        sg=1,
-        # iter=4,
-    )
-    gparams.update( **kw)
-    return gparams
-    
-gparams = to_gensim_params(cnf)
+
 
 
 # In[ ]:
