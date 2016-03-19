@@ -282,5 +282,6 @@ Conf = Schema(dict(
     dir=str,     # directory to save CSV of gradient to
     C=even,      # window diameter; must be an even number
     thresh=Num,  # gradient norm threshold for decreasing learning rate
+    pad=Num,
 ), extra=ALLOW_EXTRA, required=True)
 Conf = orig_type(Conf)
