@@ -13,12 +13,12 @@ Image(filename='kittens.png')
 
 
 # 
-# At a high level, the skip-gram flavor of this algorithm looks at a word and its surrounding  words, and tries to maximize the probability that the word's vector representation predicts those actual words occurring around it. If it is trained on the phrase *the quick brown fox jumps*, the word2vec input representation of the word *brown* would yield a high dot product with the output vectors for the words *the, quick, fox* and *jumps*.
+# At a high level, the skip-gram flavor of this algorithm looks at a word and its surrounding  words, and tries to maximize the probability that the word's vector representation predicts those actual words occurring around it. If it is trained on the phrase *the quick brown fox jumps*, the word2vec input representation of the word *brown* would yield a high dot product with the output vectors for the words *the, quick, fox* and *jumps*. And if the algorithm is trained on a lot more text, there's a good chance that it will start to learn that the words $brown$ and $red$ appear in similar contexts, so that their vector representations will be pretty close to one another's.
 # 
 # ## Speed
 # I'm constantly trying to navigate the trade-off from simultaneously maximizing my laziness and the speed of my code. Aiming for the lazy side, I originally wanted to experiment with using [autograd](https://github.com/HIPS/autograd) to write my gradient updates for me, and as nice as it was to not have to write out the gradient calculation, this pretty quickly bubbled to the top as one of the major bottlenecks, leaving me to write the gradients manually by faster means.
 # 
-# While numpy gives a big speed boost over plain python, cython (used by the go-to word2vec implementation, [gensim](https://github.com/piskvorky/gensim)), gives a major performance improvement beyond numpy, with speeds comparable to code written in C. Part of the cost of this speed up is that writing in Cython, while more pythonic than C, seems to require additional type annotations and syntactic elements, making it less readable (at least for me). My goal here has been to make word2vec as close to gensim's cython implementation as possible while sticking to Python, so I settled on Numba, a numeric JIT compiler that uses LLVM and supports a subset of Python and numpy.
+# While numpy gives a big speed boost over plain python, cython (used by the go-to word2vec implementation, [gensim](https://github.com/piskvorky/gensim)), gives a major performance improvement beyond numpy, with speeds often comparable to code written in C. Part of the cost of this speed up is that writing in Cython, while more pythonic than C, seems to require additional type annotations and syntactic elements, making it less readable (at least for me). My goal here has been to make word2vec as close to gensim's cython implementation as possible while sticking to Python, so I settled on Numba, a numeric JIT compiler that uses LLVM and supports a subset of Python and numpy.
 # 
 # While I ran into some limitations of numba, rewriting the inner loops in Numba functions ended up giving a significant speed-boost. I did a lot of profiling and iterating to find the major bottlenecks of the gradient descent learning, and I've left the original numpy and improved numba versions of some of these functions for comparison.
 
@@ -80,7 +80,7 @@ def skipgram_likelihood(wi, cwds, dv=None):
     return logloss
 
 
-# The return value of `logloss` should pretty clearly resembles the equation above.
+# The return value of `logloss` should pretty clearly resemble the equation above.
 # 
 # # Negative sampling
 # ## Gradient
@@ -103,7 +103,7 @@ def skipgram_likelihood(wi, cwds, dv=None):
 #          = \sigma(\boldsymbol v_{w_j}^{\prime T} \boldsymbol h) -t_j.
 # $$
 # 
-# The numpy gradient is below as `ns_grad`; the numba gradient `ns_grad_jit` is similar, but all of the functions used in a JIT'd function must also be numba-JIT'd, so I moved them all out to the `numba_utils` module. 
+# The numpy gradient is written below as `ns_grad`; the numba gradient `ns_grad_jit` is similar, but all of the functions used in a JIT'd function must also be numba-JIT'd, so I moved them all out to the `numba_utils` module. 
 # 
 # The schema I adopted to calculate gradients takes a subset of the matrix formed by concatenating the input and output parameter matrices together ($W || W'$). If the vector dimension $N$ is 100, and there are 1000 words in the vocabulary, this matrix will be in $\mathbb{R}^{1000 \times 200}$. The gradient function takes a subset of this matrix with $K + 2$ rows. The first row represents the input word, the next represents the true context word, and the rest represent the $K$ negative samples.
 # 
@@ -128,7 +128,6 @@ def ns_loss_grads(h: 'v[n]', vout: '[v[n]]', label: 'v[n]'):
     return dot * vout, dot * h
 
 def ns_grad(Wsub):
-    # global hgrad, vgrad, Wsub, N
     h, vwo, negsamps = get_vecs1(Wsub)
     N = getNall(Wsub)
     Wsub_grad = np.zeros(Wsub.shape)
@@ -168,7 +167,6 @@ def ns_loss_vec(h, vwo, vwi_negs):
 def J(Wsub, loss=ns_loss):
     N = getNall(Wsub)
     h, vwo, vwi_negs = get_vecs1(Wsub)
-    # h, vwo, vwi_negs = Wsub[0, :N], Wsub[1, N:], Wsub[range(2, len(Wsub)), N:]
     return loss(h, vwo, vwi_negs)
 
 def check_grad_(W, i: int=None, j: int=None, eps=1e-6, J: 'Callable'=None):
@@ -255,20 +253,22 @@ get_ipython().magic('timeit ns_grad(Wsub)       #  53.8 µs per loop')
 get_ipython().magic('timeit ns_grad_jit(Wsub)   #   6.14 µs per loop')
 
 
-# # TODO: comment
-
+# The first two gradient checking versions are extremely slow as expected from the naive and unpythonic style. The numpy implementation gives a huge improvement over these, and numba gives us another order of magnitude speedup over this. The autograd version looks like it falls at about the logarithmic midpoint between the naive checking and handwritten implementations.
+# 
 # ### Draw negative samples
 # 
 # As a foreshadowing of performance bottlenecks that my original implementation ran into, I have a few versions of a function that chooses words from the text at random, that increase in performance. They all draw words randomly according to the unigram$^{3/4}$ distribution, which is similar to the unigram distribution, but boosts the probability of less frequent items:
 
 # In[ ]:
 
-xs = np.linspace(0, 1, 100)
-uni34 = xs ** (3/4)
-plt.plot(xs, uni34 - xs);
+uni = np.linspace(0, 1, 100)
+uni34 = uni ** (3/4)
+plt.plot(uni, uni34 - uni);
 
 
-# The sampler I ended up going with, `neg_sampler_jit_pad`, is padded with a couple of dummy entries. I originally drew some negative samples `negsamps` from one of these generators, and then created the array to index $W$ by prepending `negsamps` with `w` and `c`, copying these to a new array. Usually this is ok, but I found that copying `negsamps` to a new array in the inner loop caused a noticeable delay, so I wrote `neg_sampler_jit_pad` to return 2 extra empty elements at the beginning to be able to insert `w` and `c` inplace without copying to a new array.
+# Most of the samplers were written as generators, except for the last one, `neg_sampler_inplace`, which modifies an array in-place with random samples. As much as this in-place modification conflicts with my usual approach, it ended up being necessary for a final numba performance boost.
+# 
+# The generator sampler I ended up going with, `neg_sampler_jit_pad`, is padded with a couple of dummy entries. I originally drew some negative samples `negsamps` from one of these generators, and then created the array to index $W$ by prepending `negsamps` with `w` and `c`, copying these to a new array. Usually this is ok, but I found that copying `negsamps` to a new array in the inner loop caused a noticeable delay, so I wrote `neg_sampler_jit_pad` to return 2 extra empty elements at the beginning to be able to insert `w` and `c` inplace without copying to a new array.
 
 # In[ ]:
 
@@ -341,25 +341,7 @@ def neg_sampler_jit_pad(xs, K, pow=.75, ret_type=list, pad=0):
     }[ret_type]
     return sampler(cum_prob, K, pad=pad)
 
-
-# In[ ]:
-
-def neg_sampler_jit_pad_arr(xs, K, C=5, pow=.75, pad=0, ret_type=np.ndarray):
-    cum_prob = cum_prob_uni(xs, pow=pow)
-    sampler = neg_sampler_jit_pad_arr_
-    a = np.empty((C, K + pad), dtype=np.int64)
-    return sampler(cum_prob.values, K, C, a, pad=pad)
-
-@nopython
-def neg_sampler_jit_pad_arr_(cum_prob, K, C, pad=0):
-    while 1:
-        a = np.empty((C, K + pad), dtype=np.int64)
-        for i in xrange(C):
-            for j in xrange(pad, K + pad):
-                a[i, j] = nbu.bisect_left_jit(cum_prob, nr.rand())
-        yield a
-
-def neg_sampler_jit_pad_arr(xs, K, pow=.75, pad=0, ret_type=np.ndarray):
+def neg_sampler_inplace(xs, K, pow=.75, pad=0, ret_type=np.ndarray):
     cum_prob = cum_prob_uni(xs, pow=pow)
     a = np.empty(K + pad, dtype=np.int64)
     
@@ -368,6 +350,14 @@ def neg_sampler_jit_pad_arr(xs, K, pow=.75, pad=0, ret_type=np.ndarray):
         for i in xrange(pad, K + pad):
             a[i] = nbu.bisect_left_jit(cum_prob, nr.rand())
     return a, neg_sampler_jit_pad_arr_
+
+def neg_sampler_inplace_gen(xs, K, pow=.75, pad=0, ret_type=np.ndarray):
+    a, neg_sampler_jit_pad_arr_ = neg_sampler_inplace(xs, K, pow=pow, pad=pad)
+    for _ in it.repeat(None):
+        neg_sampler_jit_pad_arr_(a)
+        yield a[pad:].copy()
+#         for i in a[pad:]:
+#             yield i
 
 
 # ### Check distributions
@@ -433,8 +423,14 @@ gen_jita_pad = NegSampler(neg_sampler_jit_pad, smtok, 8, ret_type=np.ndarray, pa
 
 # In[ ]:
 
-run_n2d = lambda gen, n=10000, w=5: ilen(x for xs in it.islice(gen, n // w) for x in xs)
-run_part = lambda gen, n=10000, w=5: ilen(x for xs in it.islice(z.partition(w, gen), n // w) for x in xs)
+gen_jita_padi = NegSampler(neg_sampler_inplace_gen, smtok, 8, ret_type=np.ndarray, pad=2)
+
+
+# In[ ]:
+
+# a_, inplace = neg_sampler_inplace(smtok, 8, pow=.75, pad=2)
+# run_n2d = lambda gen, n=10000, w=5: ilen(x for xs in it.islice(gen, n // w) for x in xs)
+# run_part = lambda gen, n=10000, w=5: ilen(x for xs in it.islice(z.partition(w, gen), n // w) for x in xs)
 
 
 # In[ ]:
@@ -447,6 +443,7 @@ get_ipython().magic('timeit run_n(gen_jitl)')
 get_ipython().magic('timeit run_n(gen_jitl_pad)')
 get_ipython().magic('timeit run_n(gen_jita)')
 get_ipython().magic('timeit run_n(gen_jita_pad)')
+get_ipython().magic('timeit run_n(gen_jita_padi)')
 # %timeit run_n2d(gen_jit_pada, w=5)
 
 
@@ -456,11 +453,12 @@ n = 100000
 csp = Series(Counter(x for xs in it.islice(gen_pd, n // 100) for x in xs))
 csnp = Series(Counter(x for xs in it.islice(gen_npl, n) for x in xs))
 csj = Series(Counter(x for xs in it.islice(gen_jita_pad, n) for x in xs[2:]))
-cs_ip = Series(Counter(x for _ in xrange(n) for x in sampler(a) or a[2:]))
+cs_ip = Series(Counter(x for xs in it.islice(gen_jita_padi, n) for x in xs))
+# cs_ip = Series(Counter(x for _ in xrange(n) for x in inplace(a_) or a_[2:]))
 
 
 ug = unigram(smtok, pow=.75)
-cts = DataFrame({'Numba': csj, 'Numpy': csnp, 'Pandas': csp}).fillna(0)
+cts = DataFrame({'Numba': csj, 'Numpy': csnp, 'Pandas': csp, 'Inplace': cs_ip}).fillna(0)
 probs = cts / cts.sum()
 probs['Probs'] = ug.Prob / ug.Prob.sum()
 
@@ -476,17 +474,19 @@ def plot_dist(xcol=None, subplt=None):
     plt.plot([0, end], [0, end], alpha=.2)
     
 plt.figure(figsize=(16, 10))
-plot_dist(xcol='Numba', subplt=131)
-plot_dist(xcol='Numpy', subplt=132)
-plot_dist(xcol='Pandas', subplt=133)
+plot_dist(xcol='Numba', subplt=141)
+plot_dist(xcol='Numpy', subplt=142)
+plot_dist(xcol='Pandas', subplt=143)
+plot_dist(xcol='Inplace', subplt=144)
 
 
-# As these plots show, the samplers seem to be drawing words according to the expected distribution. The pandas sampler was so slow that I had to reduce the number of draws by a couple orders of magnitude, so the plot is a lot noisier than the others, but still roughly on track.
+# As these plots show, the samplers seem to be drawing words according to the expected distribution. The pandas sampler was so slow that I had to reduce the number of draws by a couple orders of magnitude, so the plot is a lot noisier than the others, but still roughly on track. The in-place sampler appears to be slower on the microbenchmarks, but gives an improvement when restructuring the gradient update routine.
 # 
 # ### Sliding window
 # It turned out another significant bottleneck of the gradient descent routine was the sliding window code that iterates over the entire corpus, yielding a word and its context words at each point. 
 # 
-# For the first few words, there are less than $C$ surrounding context words, so some checking is required. For the numba function, I used a specialized iterator at the beginning and end to avoid checking the max and min indices at every step.
+# For the first few words in the text sequence, there are less than $C$ surrounding context words, so some checking is required. For the numba function, I used a specialized iterator at the beginning and end to avoid checking the max and min indices at every step.
+# Just like in the negative sampler section, I first wrote the sliding window functions in a generator style, and converted the fastest version to an inplace modification style.
 
 # In[ ]:
 
@@ -538,9 +538,7 @@ def sliding_window_jit_arr(xs, C=4):
 # In[ ]:
 
 @nopython
-def sliding_window_ix(xs, i, C=4):
-    """Iterates through corpus, yielding input word
-    and surrounding context words"""
+def sliding_window_inplace(xs, i, C=4):
     winsize = C // 2
     N = len(xs)
     if i < winsize:
@@ -556,14 +554,7 @@ def sliding_window_ix(xs, i, C=4):
     raise ValueError('Out of bounds')
     
 def sliding_window_ix_(xs, C=4):
-    return [sliding_window_ix(xs, i, C=C) for i in xrange(len(xs))]
-
-
-# In[ ]:
-
-sliding_window_ix(toka, i, C=6)
-for i in xrange(len(toka)):
-    sliding_window_ix(toka, i, C=4)
+    return (sliding_window_inplace(xs, i, C=C) for i in xrange(len(xs)))
 
 
 # In[ ]:
@@ -586,11 +577,10 @@ get_ipython().magic('timeit run_window(sliding_window)')
 get_ipython().magic('timeit run_window(sliding_window_jit)')
 get_ipython().magic('timeit run_window(sliding_window_jit_arr, toks=samp_toks)')
 get_ipython().magic('timeit run_window(sliding_window_ix_, toks=samp_toks)')
-# assert run_window(sliding_window) == run_window(sliding_window_jit) == run_window(sliding_window_jit_arr)
 
 
 # ### Norm
-# Since I'm using the concatenated input and output matrix, half of the `w, c, negsamps` submatrix entries are 0. A specialized norm function gives about an order of magnitude speedup over the numpy one.
+# Since I'm using the concatenated input and output matrix, half of the `w, c, negsamps` submatrix entries are 0. A specialized norm function taking this structure into account gives about an order of magnitude speedup over the numpy one.
 
 # In[ ]:
 
@@ -633,11 +623,6 @@ vc = dv.feature_names_
 
 # In[ ]:
 
-
-
-
-# In[ ]:
-
 cnf = ut.AttrDict(
     eta=.1, min_eta=.0001, accumsec=0,
     N=100, C=4, K=6, iter=0, thresh=15, epoch=0,
@@ -657,7 +642,7 @@ We = W.copy()
 
 
 # ### Sgd
-# One final speedup I got was from putting the entire inner loop routine into a numba JIT'd function, instead of calling each JIT'd function separately. Numba seems to reduce some of python's function call overhead, as well as the numpy indexing. For some reason, indexing into a numpy array (to calculate the gradient and then update the original matrix) still ended up being a significant speed factor, though numba seemed to reduce it.
+# One final speedup I got was from putting the entire inner loop routine into a numba JIT'd function, instead of calling each JIT'd function separately. Numba seems to reduce some of python's function call overhead, as well as the numpy indexing. For some reason, indexing into a numpy array (to calculate the gradient and then update the original matrix) still ended up being a significant bottleneck, though numba seemed to reduce it.
 
 # In[ ]:
 
@@ -666,23 +651,45 @@ get_ipython().magic('load_ext line_profiler')
 
 # In[ ]:
 
-def grad_update(W, sub_ixs, eta, ns_grad=ns_grad):
-    Wsub = W[sub_ixs]
-    grad = ns_grad(Wsub)
-    gnorm = np.linalg.norm(grad)  # grad_norm
-    if gnorm > 5:  # clip gradient
-        grad /= gnorm
-    W[sub_ixs] = Wsub - eta * grad
-    
-@nopython
-def grad_update_jit(W, sub_ixs, eta):
-    Wsub = W[sub_ixs]
-    grad = ns_grad_jit(Wsub)
-    gnorm = grad_norm(grad)
-    if gnorm > 5:  # clip gradient
-        grad /= gnorm
-    W[sub_ixs] = Wsub - eta * grad
+def mk_grad_update(jit=False, grad_func=ns_grad):
+    if jit:
+        grad_func = ns_grad_jit
+        norm_func = grad_norm
+        deco = nopython
+    else:
+        norm_func = np.linalg.norm
+        deco = lambda x: x
+        
+    def grad_update(W, sub_ixs, eta):
+        Wsub = W[sub_ixs]
+        grad = grad_func(Wsub)
+        gnorm = norm_func(grad)
+        if gnorm > 5:  # clip gradient
+            grad /= gnorm
+        W[sub_ixs] = Wsub - eta * grad
+        
+    return deco(grad_update)
 
+grad_update = mk_grad_update(jit=False)
+grad_update_jit = mk_grad_update(jit=True)
+
+
+#     def grad_update(W, sub_ixs, eta, ns_grad=ns_grad):
+#         Wsub = W[sub_ixs]
+#         grad = ns_grad(Wsub)
+#         gnorm = np.linalg.norm(grad)  # grad_norm
+#         if gnorm > 5:  # clip gradient
+#             grad /= gnorm
+#         W[sub_ixs] = Wsub - eta * grad
+# 
+#     @nopython
+#     def grad_update_jit(W, sub_ixs, eta):
+#         Wsub = W[sub_ixs]
+#         grad = ns_grad_jit(Wsub)
+#         gnorm = grad_norm(grad)
+#         if gnorm > 5:  # clip gradient
+#             grad /= gnorm
+#         W[sub_ixs] = Wsub - eta * grad
 
 # In[ ]:
 
@@ -714,10 +721,10 @@ def check_padding(sampler, k, grad_update, dims=1):
 padded_updates = {grad_update_jit_pad}
 
 
-gen_npl = NegSampler(neg_sampler_np, toki, K=cnf.K, ret_type=list)
+gen_npl = NegSampler(neg_sampler_np, toki, K=cnf_.K, ret_type=list)
 numpy_opts = dict(ns_grad_=ns_grad, neg_sampler=gen_npl, sliding_window=sliding_window, grad_update=inner_update)
 
-ngsamp_pad = NegSampler(neg_sampler_jit_pad, toki, cnf.K, ret_type=np.ndarray, pad=2)
+ngsamp_pad = NegSampler(neg_sampler_jit_pad, toki, cfp.K, ret_type=np.ndarray, pad=2)
 fast_opts = dict(ns_grad_=ns_grad_jit, neg_sampler=ngsamp_pad, sliding_window=sliding_window_jit, grad_update=grad_update_jit_pad)
 
 
@@ -763,7 +770,7 @@ def sgd(W=None, corp=None, cf={}, ns_grad_=ns_grad, neg_sampler=None,
     return W, cf2
 
 toka = np.array(toki)
-_ = sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 1000}), **fast_opts)
+_ = sgd(W=We.copy(), corp=toki, cf=update(cnf_, term={'iters': 1000}), **fast_opts)
 
 
 # In[ ]:
@@ -777,7 +784,7 @@ def mk_sgd2(cf=None, sampler=None):
         sub_ixs = np.empty(K + pad, np.int64)
         etas = np.linspace(eta, min_eta, N)
         for i in xrange(N):
-            w, conts = sliding_window_ix(toka, i, C=C)
+            w, conts = sliding_window_inplace(toka, i, C=C)
             eta_ = etas[i]
             for c in conts:
                 sampler(sub_ixs)
@@ -788,31 +795,13 @@ def mk_sgd2(cf=None, sampler=None):
     return looper
 
 
-a, inplace_sampler = neg_sampler_jit_pad_arr(toka, cfp.K, pow=.75, pad=cfp.pad, ret_type=np.ndarray)
+a, inplace_sampler = neg_sampler_inplace(toka, cfp.K, pow=.75, pad=cfp.pad, ret_type=np.ndarray)
 
 sgd2 = mk_sgd2(cfp, sampler=inplace_sampler)
 # loop(w1, toka[:100], eta=cnf.eta, min_eta=cnf.min_eta, C=cnf.C, K=cnf.K, pad=2)
 w1 = We.copy()
 sgd2(w1, toka[:100]); None
 # sgd2(w1, toka[:100], cfp, sampler=inplace_sampler)
-
-
-# In[ ]:
-
-cfp
-
-
-# In[ ]:
-
-try:
-    loop(w1, toka[:100], eta0=cnf.eta, min_eta=cnf.min_eta, C=cnf.C, K=cnf.K, pad=2)
-except Exception as e:
-    print(e)
-
-
-# In[ ]:
-
-sliding_window_ix(xs, i, C=4)
 
 
 # ### Benchmarks
@@ -826,22 +815,38 @@ sliding_window_ix(xs, i, C=4)
 
 # In[ ]:
 
-_w1, _wpd = We.copy(), We.copy()
+_w1, _w2 = We.copy(), We.copy()
 tm = {'iters': 100000}
 tm = {}
 
 
 # In[ ]:
 
-get_ipython().magic('time _w1c, _ = sgd(W=_w1, corp=toki, cf=update(cnf_, term=tm), **fast_opts)')
-np.linalg.norm(_w1c)
+cnf_
+
+
+# In[ ]:
+
+cfp
 
 
 # In[ ]:
 
 _w1 = We.copy()
-get_ipython().magic('time _w1b = sgd2(w1, toka)')
-np.linalg.norm(_w1b)
+get_ipython().magic('time _w1a, _ = sgd(W=_w1, corp=toki, cf=update(cnf_, term=tm), **fast_opts)')
+np.linalg.norm(_w1a)
+
+
+# In[ ]:
+
+_w2 = We.copy()
+get_ipython().magic('time _w2a = sgd2(_w2, toka)')
+np.linalg.norm(_w2a)
+
+
+# In[ ]:
+
+
 
 
 # In[ ]:
