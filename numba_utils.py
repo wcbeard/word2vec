@@ -1,15 +1,15 @@
-from numba import jit
+from builtins import range as xrange
+from numba import njit
 import numpy as np
 import numpy.random as nr
 
-nopython = jit(nopython=1)
-getNall = nopython(lambda W: W.shape[1] // 2)
-sig = nopython(lambda x: 1 / (1 + np.exp(-x)))
-gen_labels = nopython(lambda pos_negs: [1] + [0] * (len(pos_negs) - 1))
+getNall = njit(lambda W: W.shape[1] // 2)
+sig = njit(lambda x: 1 / (1 + np.exp(-x)))
+gen_labels = njit(lambda pos_negs: [1] + [0] * (len(pos_negs) - 1))
 
 
 # Gradient calculation
-@nopython
+@njit
 def dot(a, b):
     sm = 0
     for i in range(len(a)):
@@ -17,7 +17,7 @@ def dot(a, b):
     return sm
 
 
-@nopython
+@njit
 def get_vecs1(Wsub):
     """Extract weight vectors from subset of
     negative-sampling skip-gram weight matrix.
@@ -30,18 +30,18 @@ def get_vecs1(Wsub):
     return h, vwo_negsamps
 
 
-@nopython
+@njit
 def ns_prob(h=None, vout=None, label=None):
     return sig(dot(vout, h)) - label
 
 
-@nopython
+@njit
 def ns_loss_grads(h, vout, label):
     dotprod = ns_prob(h=h, vout=vout, label=label)
     return dotprod * vout, dotprod * h
 
 
-@nopython
+@njit
 def inner(Wsub_grad, N, h, i, vout, label):
     hgrad, vgrad = ns_loss_grads(h, vout, label)
     for j in range(N):
@@ -49,13 +49,13 @@ def inner(Wsub_grad, N, h, i, vout, label):
         Wsub_grad[i, N + j] += vgrad[j]
 
 
-@nopython
+@njit
 def loop(Wsub_grad, N, h, vwo_negsamps):
     for i, label in enumerate(gen_labels(vwo_negsamps), 1):
         inner(Wsub_grad, N, h, i, vwo_negsamps[i - 1], label)
 
 
-@nopython
+@njit
 def ns_grad(Wsub):
     h, vwo_negsamps = get_vecs1(Wsub)
     N = getNall(Wsub)
@@ -65,7 +65,7 @@ def ns_grad(Wsub):
 
 
 # Negative sampler
-@nopython
+@njit
 def bisect_left_jit(a, v):
     """Based on bisect module at (commit 1fe0fd9f)
     cpython/blob/master/Modules%2F_bisectmodule.c#L150
@@ -80,7 +80,7 @@ def bisect_left_jit(a, v):
     return lo
 
 
-@nopython
+@njit
 def neg_sampler_jitl_(cum_prob, K):
     while 1:
         l = []
@@ -88,7 +88,7 @@ def neg_sampler_jitl_(cum_prob, K):
             l.append(bisect_left_jit(cum_prob, nr.rand()))
         yield l
 
-@nopython
+@njit
 def neg_sampler_jita_(cum_prob, K):
     while 1:
         a = np.empty(K, dtype=np.int64)
@@ -96,7 +96,7 @@ def neg_sampler_jita_(cum_prob, K):
             a[i] = bisect_left_jit(cum_prob, nr.rand())
         yield a
 
-@nopython
+@njit
 def neg_sampler_jitl_pad(cum_prob, K, pad=0):
     init = [0] * pad
     while 1:
@@ -105,7 +105,7 @@ def neg_sampler_jitl_pad(cum_prob, K, pad=0):
             l.append(bisect_left_jit(cum_prob, nr.rand()))
         yield l
 
-@nopython
+@njit
 def neg_sampler_jita_pad(cum_prob, K, pad=0):
     while 1:
         a = np.empty(K + pad, dtype=np.int64)
@@ -114,7 +114,7 @@ def neg_sampler_jita_pad(cum_prob, K, pad=0):
         yield a
 
 
-@nopython
+@njit
 def remove_dupes(negsamps: 'array[int]', w, c):
     """Put w, c in negsamps[0,1] negsamps[2:]. If w or c occur in
     negsamps[2:], remove and return results.
@@ -140,7 +140,7 @@ remove_dupes_ = lambda negsamps, w, c: np.array([w, c] + [n for n in negsamps[2:
 
 
 # Array funcs
-@nopython
+@njit
 def concat_jit(arr, *xs):
     X = len(xs)
     A = len(arr)
@@ -152,7 +152,7 @@ def concat_jit(arr, *xs):
         a2[i] = arr[i - X]
     return a2
 
-@nopython
+@njit
 def concat(a, b):
     na = len(a)
     n = na + len(b)
@@ -164,7 +164,7 @@ def concat(a, b):
     return c
 
 
-@nopython
+@njit
 def count_occ(arr, x, start=0):
     "# of occurrences of `x` in `arr`"
     ct = 0
@@ -174,7 +174,7 @@ def count_occ(arr, x, start=0):
     return ct
 
 
-@nopython
+@njit
 def contains(arr, x):
     for e in arr:
         if x == e:
@@ -183,7 +183,7 @@ def contains(arr, x):
 
 
 #Sliding window
-@nopython
+@njit
 def bounds_check_window(i, xs: [int], winsize, N):
     x = xs[i]
     ix1 = max(0, i-winsize)
@@ -191,9 +191,52 @@ def bounds_check_window(i, xs: [int], winsize, N):
     return x, xs[ix1:i] + xs[i + 1:ix2]
 
 
-@nopython
+@njit
 def bounds_check_window_arr(i, xs: np.array, winsize, N):
     x = xs[i]
     ix1 = max(0, i-winsize)
     ix2 = min(N, i+winsize+1)
     return x, concat(xs[ix1:i], xs[i + 1:ix2])
+
+
+@njit
+def nseed(x):
+    return nr.seed(x)
+
+
+# Eval
+@njit
+def sum0(arr):
+    m, n = arr.shape
+    a = np.zeros(n)
+    for i in xrange(m):
+        for j in xrange(n):
+            a[j] += arr[i, j]
+    return a
+
+@njit
+def combine_(vecs):
+    v = sum0(vecs) / len(vecs)
+    return v / norm_jit1d(v)
+
+
+@njit
+def norm_jit1d(a):
+    return np.sqrt(np.sum(a ** 2))
+
+
+@njit
+def norm_jit2d(a):
+    sm = 0
+    n, m = a.shape
+    for i in xrange(n):
+        for j in xrange(m):
+            sm += a[i, j] ** 2
+    return np.sqrt(sm)
+
+
+@njit
+def ix_combine_(a, ixs, nplus):
+    vecs = a[ixs]
+    vecs[nplus:, :] *= -1
+    return combine_(vecs)

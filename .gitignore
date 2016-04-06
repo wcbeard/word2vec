@@ -1,3 +1,5 @@
 src/
 prof/
 .env
+dump.rdb
+

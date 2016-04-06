@@ -1,16 +1,20 @@
 import builtins
 from collections import Counter, OrderedDict
 from functools import wraps
-from itertools import repeat, islice
+from itertools import repeat, islice, count
 from sklearn.feature_extraction import DictVectorizer
 import numpy as np
 import numpy.random as nr
+from numpy.linalg import norm
+from operator import itemgetter as itg
 from pandas import Series, DataFrame, Index
 from typing import Union, Iterable, Dict, List
 from numba import jit
 
 import toolz.curried as z
 from voluptuous import Any, Invalid, Schema, ALLOW_EXTRA
+import numba_utils as nbu
+import utils as ut
 
 nopython = jit(nopython=True)
 
@@ -170,54 +174,83 @@ def inspect_freq_thresh(txt: [str]):
 
 
 # Closest word
-def cdist(v: '(n,)', M: '(n, m)', mnorms=None):
-    "Cosine distance"
-    if mnorms is None:
-        mnorms = np.linalg.norm(M, axis=1)
-    norms = np.linalg.norm(v) * mnorms
-    return 1 - (v @ M.T) / norms
+
+def combine(plus=[], minus=[], W=None, wd2row=None):
+    ixs = np.array([wd2row[p] for p in plus + minus])
+    wa = W.values if isinstance(W, DataFrame) else W
+    return nbu.ix_combine_(wa, ixs, len(plus))
 
 
-def get_closest(wd='death', W=None, Wnorm=None):
-    if isinstance(wd, str):
-        wvec = W.ix[wd]
-    else:
-        wvec = wd
-    dst = cdist(wvec, W, mnorms=Wnorm)
-    return dst.idxmin()
+def top_matches(sim, wds, n, skip=[]):
+    sk = set(skip)
+    N = n + len(sk)
+    ixs = np.argpartition(sim, -N)[-N:]
+    res = sim[ixs]
+    sim_, wds_ = sim[ixs], wds[ixs]
+    return sorted([(s, w) for s, w in zip(sim_, wds_) if w not in sk], key=itg(0), reverse=1)[:n]
 
 
-def get_closestn(wd='death', n=20, W=None, Wnorm=None, freq=None, exclude=[], just_word=False):
-    if Wnorm is None:
-        Wnorm = np.ones(len(W))
-    if isinstance(wd, str):
-        wvec = W.ix[wd]
-    else:
-        wvec = wd
-    dst = cdist(wvec, W, mnorms=Wnorm)
-    # if exclude:
-    #     dst = dst[~W.index.isin(exclude)]
-    if n == 1 and just_word:
-        r = dst.idxmin()
-        if r not in exclude:
-            return Index([r])
-    closests = dst.sort_values(ascending=True)[:n + len(exclude)]
-    closests = closests[~closests.index.isin(exclude)][:n]
-    if just_word:
-        return closests.index
-    cvecs = W.ix[closests.index]
-    df = DataFrame(OrderedDict([  #  ('Freq', freq.ix[dv.wds(closests)]),
-                                ('Dist', dst.ix[closests.index]),
-                                ('Size', np.diag(cvecs @ cvecs.T)),
-            ]))
-    if freq is not None:
-        df['Freq'] = closests.index.map(freq.get)
-    df.Dist = df.Dist.map('{:.2f}'.format)
-    df.Size = df.Size.map('{:.1f}'.format)
-    # df.Freq = df.Freq.round()
+def cos_sim2(a, b, bnorm=None):
+    dp = a @ b
+    bnorm = nbu.norm_jit2d(b) if bnorm is None else bnorm
+    return dp / (nbu.norm_jit1d(a) * bnorm)
 
-    # get_closestn(W=w)
-    return df.reset_index(drop=0).rename(columns={'index': 'Word'})
+
+def closest(plus=[], minus=[], W=None, wds=None, wd2row=None, bnorm=None, n=1):
+    combined = combine(plus=plus, minus=minus, W=W, wd2row=wd2row)
+    # _B = wn.values.T
+    # _bn = norm_jit2d(_B)
+    sims = cos_sim2(combined, W.T, bnorm=bnorm)
+    res = top_matches(sims, wds, n, skip=plus + minus)
+    if n > 1:
+        return res
+    [(score, match)] = res
+    return match
+
+
+class Eval(object):
+    def __init__(self, qs_loc='src/questions-words.txt'):
+        self.qs_loc = qs_loc
+        self.load_qs()
+        self.wn = None
+        self.wnorm = None
+
+    def load_qs(self, qs_loc=None):
+        with open(qs_loc or self.qs_loc, 'r') as f:
+            qlns = f.read().splitlines()
+        sections, qs = ut.partition(lambda s: not s.startswith(':'), qlns)
+        self.qs = map(str.split, qs)
+
+    def norm_w(self, W):
+        self.wn = np.divide(W, norm(W, axis=1)[:, None])
+        assert np.allclose(norm(self.wn, axis=1), 1)
+        self.wnorm = np.linalg.norm(self.wn)
+        self.vocab = np.array(self.wn.index)
+        self.vocabs = set(self.vocab)
+        self.wd2ix = dict(zip(self.vocab, count()))
+        self._kwds = dict(W=self.wn, wd2row=self.wd2ix, bnorm=self.wnorm, wds=self.vocab, n=1)
+        return self.wn
+
+    def score_(self, qs=None):
+        qs = self.qs if qs is None else qs
+        assert self.wn is not None, 'Call `norm_w(W)`'
+        res = [((closest(plus=[b, c], minus=[a], **self._kwds), ans), (a, b, c))
+               for a, b, c, ans in qs
+              if not {a, b, c} - self.vocabs]
+        self.res = res
+        return sum(a == b for (a, b), _ in res)
+
+    def score(self, W, vocab=None, qs=None):
+        if vocab is not None:
+            W = DataFrame(W, index=vocab)
+        self.norm_w(W)
+        return self.score_(qs=qs)
+
+
+def score_wv(w, vocab):
+    evl = Eval()
+    evl.norm_w(DataFrame(w, index=vocab))
+    return evl.score_()
 
 
 # Subsample

@@ -23,6 +23,7 @@ Image(filename='kittens.png')
 # While I ran into some limitations of numba, rewriting the inner loops in Numba functions ended up giving a significant speed-boost. I did a lot of profiling and iterating to find the major bottlenecks of the gradient descent learning, and I've left the original numpy and improved numba versions of some of these functions for comparison.
 
 # # Let's get started
+# [#Benchmarks](#Benchmarks)
 
 # In[ ]:
 
@@ -42,13 +43,18 @@ from wordvec_utils import Cat, WordVectorizer, update, Conf
 import utils as ut; reload(ut);
 from utils import take, ilen
 
-from numba_utils import ns_grad as ns_grad_jit
+from numba_utils import ns_grad as ns_grad_jit, nseed
 import numba_utils as nbu; reload(nbu)
 from autograd import numpy as npa, grad
 
-from numba import jit
-nopython = jit(nopython=True)
+from numba import jit, njit
+from numpy import array
+from numpy.linalg import norm
 
+# nopython = jit(nopython=True)
+
+
+# [#Evaluate](#Evaluate)
 
 # ## Objective functions
 # 
@@ -341,12 +347,16 @@ def neg_sampler_jit_pad(xs, K, pow=.75, ret_type=list, pad=0):
     }[ret_type]
     return sampler(cum_prob, K, pad=pad)
 
-def neg_sampler_inplace(xs, K, pow=.75, pad=0, ret_type=np.ndarray):
+def neg_sampler_inplace(xs, K, pow=.75, pad=0, ret_type=np.ndarray, seed=None):
+    use_seed = seed is not None and False
+    seed = seed or 0
     cum_prob = cum_prob_uni(xs, pow=pow)
     a = np.empty(K + pad, dtype=np.int64)
     
-    @nopython
+    @njit
     def neg_sampler_jit_pad_arr_(a):
+        if use_seed:
+            nr.seed(seed)
         for i in xrange(pad, K + pad):
             a[i] = nbu.bisect_left_jit(cum_prob, nr.rand())
     return a, neg_sampler_jit_pad_arr_
@@ -480,6 +490,11 @@ plot_dist(xcol='Pandas', subplt=143)
 plot_dist(xcol='Inplace', subplt=144)
 
 
+# In[ ]:
+
+del smtok, le
+
+
 # As these plots show, the samplers seem to be drawing words according to the expected distribution. The pandas sampler was so slow that I had to reduce the number of draws by a couple orders of magnitude, so the plot is a lot noisier than the others, but still roughly on track. The in-place sampler appears to be slower on the microbenchmarks, but gives an improvement when restructuring the gradient update routine.
 # 
 # ### Sliding window
@@ -500,7 +515,7 @@ def sliding_window(xs, C=4, start_pos=0):
         ix2 = min(N, i+winsize+1)
         yield x, xs[ix1:i] + xs[i + 1:ix2]
 
-@nopython
+@njit
 def sliding_window_jit(xs, C=4):
     """Iterates through corpus, yielding input word
     and surrounding context words"""
@@ -517,7 +532,7 @@ def sliding_window_jit(xs, C=4):
     for i in xrange(N-winsize, N):
         yield nbu.bounds_check_window(i, xs, winsize, N)
 
-@nopython
+@njit
 def sliding_window_jit_arr(xs, C=4):
     """Iterates through corpus, yielding input word
     and surrounding context words"""
@@ -537,7 +552,7 @@ def sliding_window_jit_arr(xs, C=4):
 
 # In[ ]:
 
-@nopython
+@njit
 def sliding_window_inplace(xs, i, C=4):
     winsize = C // 2
     N = len(xs)
@@ -584,7 +599,7 @@ get_ipython().magic('timeit run_window(sliding_window_ix_, toks=samp_toks)')
 
 # In[ ]:
 
-@nopython
+@njit
 def grad_norm(Wsub):
     """Calculate norm of gradient, where first row
     is input vector, rest are output vectors. For any row,
@@ -613,12 +628,21 @@ get_ipython().magic('timeit grad_norm(grd)')
 # That does it for optimizing most of the individual pieces.
 # For the gradient descent routine, I'm passing all the hyper-parameters through a configuration dictionary, validated by [voluptuous](https://pypi.python.org/pypi/voluptuous). This allows specification of things like the context window size, learning rate, number of negative samples and size of the word vectors. Check the utility file `wordvec_utils.py` where it's defined for details on the meanings of the parameters.
 
+# dv = WordVectorizer().fit(all_text)
+# toki = [dv.vocabulary_[x] for x in all_text]
+# vc = dv.feature_names_
+# 
+# del dv, toki, vc
+
 # In[ ]:
 
 all_text = list(brown.words())
-dv = WordVectorizer().fit(all_text)
-toki = [dv.vocabulary_[x] for x in all_text]
-vc = dv.feature_names_
+use_words_ = z.valfilter(lambda x: x >= 5, Counter(all_text))
+use_words = [w for w in all_text if w in use_words_]
+le = LabelEncoder()
+toka = le.fit_transform(use_words)
+tokl = list(toka)
+vc = le.classes_
 
 
 # In[ ]:
@@ -628,14 +652,14 @@ cnf = ut.AttrDict(
     N=100, C=4, K=6, iter=0, thresh=15, epoch=0,
     pad=0,
     term=dict(iters=None,
-              secs=10
+              secs=None
     ),
     dir='cache',
 )
 cnf = Conf(cnf)
 cnf_ = cnf
 del cnf
-cfp = update(cnf_, pad=2)
+cfp = update(cnf_, pad=2, term={})
 
 W = wut.init_w(len(vc), cnf_.N, seed=1)
 We = W.copy()
@@ -655,7 +679,7 @@ def mk_grad_update(jit=False, grad_func=ns_grad):
     if jit:
         grad_func = ns_grad_jit
         norm_func = grad_norm
-        deco = nopython
+        deco = njit
     else:
         norm_func = np.linalg.norm
         deco = lambda x: x
@@ -693,7 +717,7 @@ grad_update_jit = mk_grad_update(jit=True)
 
 # In[ ]:
 
-@nopython
+@njit
 def grad_update_jit_pad(W, sub_ixs, eta, w=0, c=0):
     """If focus or context word are contained in negative samples,
     drop them before performing the grad update.
@@ -721,10 +745,10 @@ def check_padding(sampler, k, grad_update, dims=1):
 padded_updates = {grad_update_jit_pad}
 
 
-gen_npl = NegSampler(neg_sampler_np, toki, K=cnf_.K, ret_type=list)
+gen_npl = NegSampler(neg_sampler_np, tokl, K=cnf_.K, ret_type=list)
 numpy_opts = dict(ns_grad_=ns_grad, neg_sampler=gen_npl, sliding_window=sliding_window, grad_update=inner_update)
 
-ngsamp_pad = NegSampler(neg_sampler_jit_pad, toki, cfp.K, ret_type=np.ndarray, pad=2)
+ngsamp_pad = NegSampler(neg_sampler_jit_pad, tokl, cfp.K, ret_type=np.ndarray, pad=2)
 fast_opts = dict(ns_grad_=ns_grad_jit, neg_sampler=ngsamp_pad, sliding_window=sliding_window_jit, grad_update=grad_update_jit_pad)
 
 
@@ -769,16 +793,20 @@ def sgd(W=None, corp=None, cf={}, ns_grad_=ns_grad, neg_sampler=None,
     #     print(i, 'iters')
     return W, cf2
 
-toka = np.array(toki)
-_ = sgd(W=We.copy(), corp=toki, cf=update(cnf_, term={'iters': 1000}), **fast_opts)
+_ = sgd(W=We.copy(), corp=tokl, cf=update(cnf_, term={'iters': 1000}), **fast_opts)
 
 
 # In[ ]:
 
-def mk_sgd2(cf=None, sampler=None):
+
+
+
+# In[ ]:
+
+def mk_sgd_inplace(cf=None, sampler=None):
     iters = cf.term.get('iters') or 0
     
-    @nopython
+    @njit
     def loop(W, toka, eta=None, min_eta=None, C=None, K=None, pad=None):
         N = iters or len(toka)
         sub_ixs = np.empty(K + pad, np.int64)
@@ -794,59 +822,39 @@ def mk_sgd2(cf=None, sampler=None):
     looper = partial(loop, **kwa)
     return looper
 
-
-a, inplace_sampler = neg_sampler_inplace(toka, cfp.K, pow=.75, pad=cfp.pad, ret_type=np.ndarray)
-
-sgd2 = mk_sgd2(cfp, sampler=inplace_sampler)
+a, inplace_sampler = neg_sampler_inplace(toka, cfp.K, pow=.75, pad=cfp.pad, ret_type=np.ndarray, seed=2)
+sgd_inplace = mk_sgd_inplace(cfp, sampler=inplace_sampler)
 # loop(w1, toka[:100], eta=cnf.eta, min_eta=cnf.min_eta, C=cnf.C, K=cnf.K, pad=2)
 w1 = We.copy()
-sgd2(w1, toka[:100]); None
-# sgd2(w1, toka[:100], cfp, sampler=inplace_sampler)
+sgd_inplace(w1, toka[:100]); None
+
+
+# In[ ]:
+
+get_ipython().system('say done')
 
 
 # ### Benchmarks
+# [#Begin](#Speed)
+# 
+# [#Evaluate](#Evaluate)
+
+#     w1 = We.copy()
+#     for _ in range(3):
+#         w1 = sgd_inplace(w1, toka)
+
+# evl = wut.Eval(toka)
 
 # In[ ]:
 
-- line profiler
-- create array
-- index with list
-
-
-# In[ ]:
-
-_w1, _w2 = We.copy(), We.copy()
-tm = {'iters': 100000}
-tm = {}
-
-
-# In[ ]:
-
-cnf_
+nseed(42)
+w1 = We.copy()
+get_ipython().magic('time w1 = sgd_inplace(w1, toka)')
 
 
 # In[ ]:
 
-cfp
-
-
-# In[ ]:
-
-_w1 = We.copy()
-get_ipython().magic('time _w1a, _ = sgd(W=_w1, corp=toki, cf=update(cnf_, term=tm), **fast_opts)')
-np.linalg.norm(_w1a)
-
-
-# In[ ]:
-
-_w2 = We.copy()
-get_ipython().magic('time _w2a = sgd2(_w2, toka)')
-np.linalg.norm(_w2a)
-
-
-# In[ ]:
-
-
+get_ipython().magic('time wut.score_wv(w1, vc)  # 175')
 
 
 # In[ ]:
@@ -856,15 +864,13 @@ get_ipython().system('say done')
 
 # In[ ]:
 
-_wpd = We.copy()
-get_ipython().magic('prun -q -D prof/sgd.profile _wpd, _ = sgd(W=_wpd, corp=toki, cf=update(cnf, term=tm), **fast_opts)')
+w2 = We.copy()
+get_ipython().magic('time w2, _ = sgd(W=w2, corp=tokl, cf=update(cnf_, term={}), **numpy_opts)')
 
 
 # In[ ]:
 
-_wpd = We.copy()
-fast_opts2 = update(fast_opts, sliding_window=sliding_window_jit_arr)
-get_ipython().magic('time _wpd, _ = sgd(W=_wpd, corp=toka, cf=update(cnf, term=tm), **fast_opts2)')
+wut.score_wv(w2, vc)
 
 
 # ### Gensim
@@ -877,7 +883,28 @@ from gensim.models.word2vec import Word2Vec
 
 # In[ ]:
 
+def gen_eval(mod):
+    # global sect
+    ans = mod.accuracy('src/questions-words.txt')  # , restrict_vocab=10000
+    sect = [d for d in ans if d['section'] == 'total']
+    return sum([1 for d in sect for _ in d['correct']])
+
+
+# In[ ]:
+
 gparams = ut.to_gensim_params(cnf_)
+
+
+# In[ ]:
+
+ut.reset_gensim(slow=False, gensim=gensim)
+assert gensim.models.word2vec.FAST_VERSION == 1
+
+
+# In[ ]:
+
+get_ipython().magic('time gen_fast = Word2Vec(brown.sents(), seed=42, iter=1, **gparams)')
+gen_eval(gen_fast)  #
 
 
 # In[ ]:
@@ -893,244 +920,60 @@ get_ipython().magic('time gen_slow = Word2Vec(brown.sents(), **gparams)')
 
 # In[ ]:
 
-ut.reset_gensim(slow=False, gensim=gensim)
-assert gensim.models.word2vec.FAST_VERSION == 1
+reload(wut)
 
 
 # In[ ]:
 
-get_ipython().magic('time gen_fast = Word2Vec(brown.sents(), **gparams)')
 
-
-# In[ ]:
-
-1
 
 
 # In[ ]:
 
-get_ipython().system('say done')
+get_ipython().system('say derp')
+
+
+# In[ ]:
+
+norm(w1)
+
+
+# In[ ]:
+
+gen_fast.syn0.shape
+
+
+# In[ ]:
+
+norm(gen_fast.syn0)
+
+
+# In[ ]:
+
+sns.set_palette('Paired')
+
+
+# In[ ]:
+
+sdf.groupby('Name')[0].agg(['mean', 'median'])
+"""
+            mean  median
+Name                    
+Gs1   127.500000   122.0
+Gs2   194.250000   191.5
+N1    177.333333   179.0
+N2    212.800000   213.0"""
+
+
+# In[ ]:
+
+sns.violinplot(x='Name', y=0, data=sdf)
 
 
 # # TODO: ~
 # [#Begin](#Begin)
 
-# In[ ]:
-
-_w1, _wpd = We.copy(), We.copy()
-for i in range(8):
-    _w1, _ = sgd(W=_w1.copy(), corp=toki, cf=update(cnf_, term={'iters': 10000}), **numpy_opts) 
-    _wpd, _ = sgd(W=_wpd.copy(), corp=toki, cf=update(cnf_, term={'iters': 10000}), **fast_opts)
-    
-    n1, n2 = np.linalg.norm(_w1), np.linalg.norm(_wpd)
-    print('{:.2f}; {:.2f}'.format(n1, n2))
-
-
-# In[ ]:
-
-w1 = We.copy()
-sgd2(w1, toka[:100], cfp, sampler=inplace_sampler)
-sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 1000}), **fast_opts)
-
-
-# In[ ]:
-
-# tm = {'iters': 10000}
-tm = {}
-n = 10000
-_w1, _wpd = We.copy(), We.copy()
-
-for i in range(8):
-    _w1 = sgd2(_w1, toka[:n], cf=update(cfp, term=tm), sampler=inplace_sampler)
-    _wpd, _ = sgd(W=_wpd, corp=toki[:n], cf=update(cnf_, term=tm), **fast_opts)
-    
-    n1, n2 = np.linalg.norm(_w1), np.linalg.norm(_wpd)
-    print('{:.2f}; {:.2f}'.format(n1, n2))
-
-
-# In[ ]:
-
-_ = sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 10000}), **fast_opts) 
-
-
-# In[ ]:
-
-_ = sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 1000}), **fast_opts2) 
-
-
-# In[ ]:
-
-_ = sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 10000}), **fast_opts) 
-
-
-# In[ ]:
-
-sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 10000}), **numpy_opts)
-
-
-# In[ ]:
-
-get_ipython().magic('lprun -T lp5.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=update(cnf, term=trm), **numpy_opts)  # inner_update')
-
-
-# In[ ]:
-
-trm = {}
-# trm = {'iters': 100000}
-
-
-# In[ ]:
-
-get_ipython().magic('lprun -T lp6.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=update(cnf, term=tm), **fast_opts)')
-# %lprun -T lp7.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=update(cnf, term=tm), **fast_opts) 
-
-
-# In[ ]:
-
-get_ipython().magic('lprun -T lp8.txt -s -f sgd2 sgd2(W=We.copy(), corp=toki, cf=update(cnf, term=tm), **fast_opts3)')
-
-
-# In[ ]:
-
-8.5 -> 12.5
-     
-
-
-# In[ ]:
-
-3.416416      8.6     35.5      grad = ns_grad_jit(Wsub)
-6.131119     15.4     93.2      grad_update_jit(W, sub_ixs, eta)
-
-
-# In[ ]:
-
-get_ipython().magic('time res = sgd(W=We.copy(), corp=toki, cf=update(cnf, term={}), **fast_opts)')
-
-
-# In[ ]:
-
-get_ipython().magic('time res = sgd(W=We.copy(), corp=toka, cf=update(cnf, term={}), **fast_opts)')
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-_ = sgd(W=We.copy(), corp=toki, cf=update(cnf, term={'iters': 10000}), **fast_opts)
-
-
-# In[ ]:
-
-sgd(W=We.copy(), corp=toki, cf=update(cnfe, term={'iters': 10000}), **kw)
-
-
-# In[ ]:
-
-get_ipython().magic("lprun -T lp.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=update(cnfe, term={'iters': 10000})) # ls[:20]")
-
-
-# rand_ixs = lambda W, n=8, axis=0: nr.randint(0, W.shape[axis], size=n)
-
-# In[ ]:
-
-for i in range(20):
-    print('Epoch {}'.format(cnfe.epoch))
-    We2, cnfe = sgd(W=We.copy(), corp=toki, cf=update(cnfe, term=dict()), **fast_opts)
-    break
-
-
 # ## Corpus
-
-# In[ ]:
-
-import nltk; reload(nltk)
-from gensim.models import Word2Vec
-
-
-# In[ ]:
-
-ilen(brown.words())
-
-
-# In[ ]:
-
-brown.
-
-
-# In[ ]:
-
-ilen(reuters.words())
-
-
-# In[ ]:
-
-cnfe = update(cnf, C=4, iter=0, term=dict(), N=100, dir='cache/v12', epoch=0)
-
-
-# In[ ]:
-
-default
-
-size=100
-alpha=0.025
-window=5
-sample=0
-negative=0
-sg=1
-iter=4
-
-min_alpha=0.0001
-
-
-# In[ ]:
-
-gparams = dict(
-    size=120, # 80, #
-    alpha=0.025,
-    window=2,
-    sample=0,
-    negative=2,  #[5, 7, 10, 12, 15, 17], 0
-    sg=1,
-    iter=4,
-)
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-Word2Vec(sen)
-
-
-# In[ ]:
-
-def ev(mod):
-    ans = mod.accuracy('src/questions-words.txt', restrict_vocab=10000)
-    sect = [d for d in ans if d['section'] == 'total']
-    return sum([1 for d in sect for _ in d['correct']])
-
-
-# In[ ]:
-
-cnf
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-get_ipython().magic('time gmod = Word2Vec(brown.sents(), **update(gparams))')
-ev(gmod)
-
 
 # In[ ]:
 
@@ -1266,983 +1109,20 @@ modf.cnf
 
 
 # ## Evaluate
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-
-
-def partition(pred, iterable):
-    'Use a predicate to partition entries into false entries and true entries'
-    # partition(is_odd, range(10)) --> 0 2 4 6 8   and  1 3 5 7 9
-    t1, t2 = it.tee(iterable)
-    return it.filterfalse(pred, t1), ifilter(pred, t2)
-
-with open('src/questions-words.txt', 'r') as f:
-    qlns = f.read().splitlines()
-
-
-# In[ ]:
-
-with open('src/questions-words.txt', 'r') as f:
-    qlns = f.read().splitlines()
-
-
-# modf.df = DataFrame(modf.W.copy(), index=modf.le.classes_)
-# W2 = modf.df
-
-# In[ ]:
-
-del W2
-
-
-# In[ ]:
-
-sections, qs = partition(lambda s: not s.startswith(':'), qlns)
-qs = list(qs)
-# allwds = set(modf.df.index)
-# del allwds
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-cts = Series(Counter(modf.text)) # / len(modf.text)
-assert (cts.index == modf.le.classes_).all()
-keeps = cts >= 5
-Wk = modf.df.divide(norm(modf.df, axis=1), axis=0)
-Wsmall = Wk[keeps]
-assert (norm(Wk, axis=1).round(4) == 1).all(), 'Not normalized'
-# assert (Wk.sum(axis=1).round(4) == 1).all(), 'Not normalized'
-
-
-# In[ ]:
-
-get_ipython().magic('lprun -s -f eval eval_qs(Wk, lim=500)')
-
-
-# In[ ]:
-
-def to_vec(w, W):
-    if isinstance(w, str):
-        return W.ix[w]
-    return w
-
-def to_vec2(w, W, wd2row=None):
-    if isinstance(w, str):
-        return W.values[wd2row[w]]
-    return w
-
-neg = lambda x: -x
-
-def combine(plus=[], minus=[], W=None, wd2row=None):
-    to_vec_ = partial(to_vec, W=W)
-    vecs = map(to_vec_, plus) + map(z.comp(neg, to_vec_), minus)
-    v = sum(vecs) / len(vecs)
-    return v / norm(v)
-
-def combine2(plus=[], minus=[], W=None, wd2row=None):
-    # plus_ix = [wd2row[p] for p in plus]
-    # minus_ix = [wd2row[p] for p in minus]
-    ixs = [wd2row[p] for p in plus + minus]
-    vecs1 = Wk.values[ixs]
-    to_vec_ = partial(to_vec2, W=W, wd2row=wd2row)
-    
-    vecs = map(to_vec_, plus) + map(z.comp(neg, to_vec_), minus)
-    vecs = np.array(vecs)
-    return combine_(vecs)
-    v = sum(vecs) / len(vecs)
-    return v / norm(v)
-
-
-@nopython
-def combine_(vecs):
-#     v = sum(vecs) / len(vecs)
-    v = np.sum(vecs, axis=0) / len(vecs)
-    return v / np.linalg.norm(v)
-
-
-# In[ ]:
-
-aa = np.array(vecs)
-aa.shape
-
-
-# In[ ]:
-
-combine_(aa)
-
-
-# In[ ]:
-
-get_ipython().magic('lprun -s -f combine2 combine2(plus=[b, c], minus=[a], W=Wk, wd2row=wd2ix)')
-
-
-# In[ ]:
-
-wvec = combine(plus=[b, c], minus=[a], W=Wk)
-wvec[:5]
-
-
-# In[ ]:
-
-mk_wd2row = lambda W: dict(zip(W.index, count()))
-
-
-# In[ ]:
-
-wd2ix = mk_wd2row(Wk)
-wvec2 = 
-wvec2[:5]
-
-
-# In[ ]:
-
-get_ipython().magic('timeit combine(plus=[b, c], minus=[a], W=Wk)')
-get_ipython().magic('timeit combine2(plus=[b, c], minus=[a], W=Wk, wd2row=wd2ix)')
-
-
-# In[ ]:
-
-get_ipython().magic('timeit np.array(vecs)')
-
-
-# In[ ]:
-
-combine2(plus=[b, c], minus=[a], W=Wk, wd2row=wd2ix)
-
-
-# In[ ]:
-
-(wvec == wvec2).all()
-
-
-# In[ ]:
-
-@nopython
-def index(wd2ix):
-    
-    return wd2ix
-
-
-# In[ ]:
-
-wds, arr, 
-
-
-# In[ ]:
-
-index({'abc': 123})
-
-
-# Wv = Wk.values
-# f1 = lambda: Wk.ix['youngster']
-# f2 = lambda: Wk.iloc[-18]
-# f3 = lambda: Wv[-18]
-# assert np.allclose(f1(), f3())
-# assert np.allclose(f1(), f2())
+# [#Benchmarks](#Benchmarks)
 # 
-# %timeit f1()
-# %timeit f2()
-# %timeit f3()
+# [#Begin](#Speed)
 
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-def eval(q, Wall=None, Wsmall=None, Wnorm=None, allwds=None):
-    qwds = a, b, c, d = q.split()
-    if allwds is None:
-        print('Warning: precalculate `allwds`')
-        allwds = set(Wall.index)
-    missing_wds = {a, b, c} - allwds
-    if missing_wds:
-        # print(u'\u2639', end='')
-#         print(u'.', end='')
-        return False
-    wvec = combine(plus=[b, c], minus=[a], W=Wall)
-    [closest] = wut.get_closestn(wd=wvec, W=Wsmall, n=1, exclude=[a, b, c], just_word=1)
-    ans = closest == d
-        
-    return ans
-
-        
-def eval_qs(Wsmall, Wall, lim=None):
-    Wn = np.linalg.norm(Wsmall, axis=1)
-    allwds = set(Wall.index)
-    sm = 0
-    for ql in qs[:lim]:
-        print(list(allwds)[:5])
-        e = eval(ql, Wall=Wall, Wsmall=Wsmall, Wnorm=Wn, allwds=allwds)
-        if e:
-#             print('!', end='')
-            print(ql, end=':')
-            sm += 1
-    return sm
-    #     break
-
-
-# In[ ]:
-
-get_ipython().magic('pinfo2 Wk.ix')
-
-
-# In[ ]:
-
-Wk._
-
-
-# In[ ]:
-
-# %lprun -s -f eval eval_qs(Wk, lim=500)
-get_ipython().magic('lprun -s -f combine eval(ql, Wall=Wk, Wsmall=Wk, Wnorm=norm(Wk, axis=1), allwds=set(Wk.index))')
-
-
-# In[ ]:
-
-# %lprun eval(ql, Wall=Wk, Wsmall=Wk, Wnorm=norm(Wk, axis=1))
-
-
-# In[ ]:
-
-sc
-
-
-# In[ ]:
-
-sc = eval_qs(Wk, Wk, lim=50)
-
-
-# In[ ]:
-
-sc
-
-
-# In[ ]:
-
-Wk.shape
-
-
-# In[ ]:
-
-gmod.syn0norm.shape
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-a, b, c, d = 'boy', 'girl', 'brothers', 'sisters'
-
-
-# In[ ]:
-
-norm = np.linalg.norm
-reload(wut);
-
-
-# In[ ]:
-
-closests = wut.get_closestn.closests
-print(len(closests))
-closests
-
-
-# In[ ]:
-
-norm(Wk, axis=1)
-
-
-# In[ ]:
-
-wvec = combine(plus=[b, c], minus=[a], W=Wk)
-cl = wut.get_closestn(wd=wvec, W=Wk, Wnorm=None, n=1, exclude=[a, b, c], just_word=1)
-cl
-
-
-# In[ ]:
-
-wut.cdist(wvec, Wk)[Wk.index.isin([a, b, c])]
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-sis = Wsmall.ix['sisters']
-(sis @ wvec) / (norm(sis) * norm(wvec))
-
-
-# In[ ]:
-
-ga, gb, gc, gd = gmod.vocab[a], gmod.vocab[b], gmod.vocab[c], gmod.vocab[d],
-ga, gb, gc, gd = gmod.syn0norm[ga.index], gmod.syn0norm[gb.index], gmod.syn0norm[gc.index], gmod.syn0norm[gd.index]
-gv = (gb + gc - ga) / 3
-gv /= norm(gv)
-
-
-# In[ ]:
-
-gv
-
-
-# In[ ]:
-
-norms = gmod.syn0norm @ gv
-isort = np.argsort(norms)[::-1][:20]
-
-
-# In[ ]:
-
-[gmod.index2word[i] for i in isort]
-
-
-# In[ ]:
-
-norms[isort]
-
-
-# In[ ]:
-
-isort
-
-
-# In[ ]:
-
-gmod.syn0norm.shape
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-get_ipython().magic('pinfo get_closests')
-get_closests 
-
-
-# In[ ]:
-
-sc
-
-
-# In[ ]:
-
-len(Wk)
-
-
-# In[ ]:
-
-gsc = gmod.accuracy('src/questions-words.txt')
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-gsc_dct = {doc.pop('section'): doc for doc in gsc}
-gfound = {w for set_ in gsc_dct['total']['correct'] for w in set_[:3]}
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-b, c, gmod.most_similar(positive=[b])
-
-
-# In[ ]:
-
-gmod.most_similar(positive=[b, c], negative=[a])
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-gsc_dct['family']['correct']
-
-
-# In[ ]:
-
-for doc in gsc:
-    print(doc['section'], end=': ')
-    print(len(doc['correct']))
-#     break
-
-
-# In[ ]:
-
-list(gsc)
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-cnfs = update(cnfe, dir='cache/slow')
-mod = word2vec(brown.words(), cnfs)
-
-
-# In[ ]:
-
-ls src/
-
-
-# In[ ]:
-
-get_ipython().magic("time mod.run(term={})  # 'iters': 10000")
-
-
-# ## Gensim benchmarking
-
-# In[ ]:
-
-import gensim
-from gensim.models.word2vec import Word2Vec
-
-
-# In[ ]:
-
-get_ipython().magic('pinfo Word2Vec')
-
-
-# In[ ]:
-
-gparams
-
-
-# In[ ]:
-
-toki = 
-
-
-# In[ ]:
-
-gensim_sents = brown.sents() # [s.orth_.split() for s in atks.sents]
-
-param_vals = dict(
-    sample=[1e-3, 5e-3, 1e-2, 5e-2, .1, .15, 0],
-    negative=range(0, 8),  #[5, 7, 10, 12, 15, 17],
-    window=range(2, 20),
-    sg=[0, 1],
-    size=np.arange(1, 40) * 4,
-    alpha=[0.05, 0.025, 0.01, 0.005],
-    iter=range(1, 5),
-    
-)
-
-param_lst = ['alpha', 'iter', 'negative', 'sample', 'sg', 'size', 'window']
-assert sorted(param_vals) == param_lst, 'Need to update param_lst'
-
-cs = param_lst + ['score']
-to_param_dct = lambda xs: OrderedDict(zip(param_lst, xs))
-from_param_dct = lambda dct, cs=param_lst: [dct[c] for c in cs]
-
-# param_vals
-
-
-# get_closests(to_param_dct([0.025, 4.0, 0.0, 0.0, 1.0, 80.0, 4.0]))
-
-# In[ ]:
-
-to_param_dct([0.025, 4.0, 0.0, 0.0, 1.0, 80.0, 4.0])
-
-
-# In[ ]:
-
-def get_closest(k, v, poss=param_vals):
-    return min(poss[k], key=lambda x: abs(v - x))
-
-def get_closests(dct, poss=param_vals):
-    return {k: get_closest(k, v, poss=poss) for k, v in dct.items()}
-
-def param_gen(params, n_iters=None):
-    counter = count() if n_iters is None else range(n_iters)
-    for i in counter:
-        yield {k: nr.choice(v) for k, v in param_vals.items()}
-
-def run_model(n=None, perfs=None, lfname='cache/log.csv'):
-    pg = param_gen(param_vals, n)
-
-    for params in pg:
-        st = time.time()
-        model = Word2Vec(sentences=gensim_sents, workers=4, **params)
-        perf = dict(params)
-        perf['score'] = score(model)
-        perfs.append(perf)
-        print('time: {:.2f}'.format(time.time() - st))
-      
-        if not os.path.exists(lfname):
-            mode, header = 'w', True
-        else:
-            mode, header = 'a', False
-        with open(lfname, mode) as f:
-            DataFrame([perf])[cs].to_csv(f, header=header, sep='\t')
-        sys.stdout.flush()
-    return perfs
-
-def score(model, restrict_vocab=10000):
-    acc = model.accuracy('src/questions-words.txt', restrict_vocab=restrict_vocab)
-    [tot] = [d for d in acc if d['section'] == 'total']
-    print(len(tot['correct']), '/', len(tot['incorrect']) + len(tot['correct']), end=' ')
-    return len(tot['correct'])
-
-
-# In[ ]:
-
-param_ex = next(param_gen(param_vals, None))
-ex_vals = map(itg(1), sorted(param_ex.items()))
-to_param_dct(ex_vals)
-
-
-# In[ ]:
-
-para
-
-
-# In[ ]:
-
-res = minimize(rosen, x0, method='nelder-mead',
-               options={'xtol': 1e-8, 'disp': True})
-
-
-# In[ ]:
-
-def eval_func(paramlist):
-    print(paramlist)
-    param_dct_ = to_param_dct(paramlist)
-    param_dct = {k: get_closest(k, v) for k, v in param_dct_.items()}
-    print(param_dct)
-    model = Word2Vec(sentences=gensim_sents, workers=4, **param_dct)
-    return score(model)
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-from scipy.optimize import minimize
-
-
-# In[ ]:
-
-get_ipython().magic('pinfo minimize')
-
-
-# In[ ]:
-
-# perfs = []
-perfs = run_model(n=None, perfs=perfs)
-## End Gensim benchmarking
-
-
-# In[ ]:
-
-cs
-
-
-# In[ ]:
-
-perfs[:4][cs]
-
-
-# In[ ]:
-
-Series(list(cts.values())).value_counts(normalize=1)
-
-
-# In[ ]:
-
-modf.W.shape
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-z.merge({2: 4}, {2: 3})
-
-
-# In[ ]:
-
-def f(**kw):
-    print(kw)
-    
-f(a=2, **{'a': 3})
-
-
-# In[ ]:
-
-# neg_sampler=ngsamp, 
-
-
-# In[ ]:
-
-ngsamp = neg_sampler_j(toki, cnfe.K)
-
-
-# In[ ]:
-
-
-get_ipython().magic("lprun -T lp5.txt -s -f sgd sgd(W=We.copy(), corp=toki, cf=update(cnfe, term={'iters': 10000}), **fast_opts) # ls[:20]")
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-cnfe.
-
-
-# In[ ]:
-
-gmod
-
-
-# In[ ]:
-
-gmod.most_similar('politician')
-
-
-# In[ ]:
-
-brown.sents()
-
-
-# In[ ]:
-
-get_ipython().magic('time sgd(W=We.copy(), corp=toki, cf=update(cnfe, term=dict()))')
-
-
-# In[ ]:
-
-get_ipython().magic('time sgd(W=We.copy(), corp=toki, cf=update(cnfe, term=dict()), **fast_opts)')
-
-
-# In[ ]:
-
-np.allclose(w1, w2)
-
-
-# In[ ]:
-
-ineg(w1, ixs, gr)
-
-
-# In[ ]:
-
-inegp(w2, ixs, gr)
-np.allclose(w1, w2)
-
-
-# In[ ]:
-
-wtst[ixs]
-
-
-# In[ ]:
-
-wtst = wut.init_w(1000, 50)
-wsub = wtst[:8].copy()
-gr = ns_grad(wsub)
-# gr
-
-
-# In[ ]:
-
-test_ineg1(wsub)
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-grad, grad2 = grd, grd2
-Wsub = W2[[w, c] + list(negsamps)]
-
-
-# In[ ]:
-
-DataFrame(approx_grad(Wsub))
-
-
-# In[ ]:
-
-DataFrame(Wsub)
-
-
-# In[ ]:
-
-DataFrame(ns_grad(W2[[w, c] + list(negsamps)]))
-
-
-# In[ ]:
-
-DataFrame(grad)
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-vc[w]
-
-
-# In[ ]:
-
-map(vc.__getitem__, [c])
-
-
-# In[ ]:
-
-map(vc.__getitem__, negsamps)
-
-
-# In[ ]:
-
-negsamps
-
-
-# In[ ]:
-
-del w, cont, c, negsamps
-
-
-# In[ ]:
-
-np.linalg.norm(grad, axis=1)
-
-
-# In[ ]:
-
-vc[19276]
-
-
-# In[ ]:
-
-toki[]
-
-
-# In[ ]:
-
-sgdpart = partial(sgd, W=W.copy(), corp=toki, cf=update(cnfe, term={'iters': 1}))
-_ = sgdpart()
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-1
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-gradnorm_vec = np.linalg.norm(grad, axis=1)
-
-
-# In[ ]:
-
-if np.linalg.norm(gradnorm_vec) > 5:
-    grad = grad / gradnorm_vec[:, None]
-
-
-# In[ ]:
-
-# gradnormed = np.divide(grad, gradnorm)
-gradnormed = grad / gradnorm[:, None]
-
-
-# In[ ]:
-
-np.linalg.norm(gradnormed, axis=1)
-
-
-# In[ ]:
-
-gradnormed.sum(axis=1)
-
-
-# In[ ]:
-
-7.12
-  1085718
-6.00742
--> 684739
-
-
-# In[ ]:
-
-sgd(W=W.copy(), corp=toki, cf=update(cnf, term={'iters': 1}));
-get_ipython().magic("prun -qD prof.txt sgd(W=W.copy(), corp=toki, cf=update(cnf, term={'iters': 5000})) # ls[:20]")
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-
-
-
-# We = pd.read_csv('cache/v9/n15_e26.csv', index_col=0).values
-
-# In[ ]:
-
-grd
-
-
-# In[ ]:
-
-plt.scatter(*zip(*gns), alpha=.1)
-
-
-# In[ ]:
-
-for i in range(20):
-    print('Epoch {}'.format(cnfe.epoch))
-    We2, cnfe = sgd(W=We.copy(), corp=toki, cf=update(cnfe, term=dict()))
-    break
-
-
-# In[ ]:
-
-We2 - We
-
-
-# In[ ]:
-
-get_ipython().run_cell_magic('time', '', "W2, cnf2 = sgd(W=W.copy(), corp=toki, cf=update(cnf, term={'mins': 60})) # ls[:20]\nsw = sliding_window(toki, C=cnf.C)\n# 799509 iters\n# CPU times: user 12min 29s, sys: 4.47 s, total: 12min 34s\n# Wall time: 12min 35s")
-
-
-# In[ ]:
-
-get_ipython().run_cell_magic('time', '', 'W3, cnf3 = sgd(W=W2.copy(), corp=toki, cf=update(cnf2, iter=0)) # ls[:20]')
-
-
-# %%time
-# W3, cnf2 = sgd(W=W2.copy(), corp=toki, cf=update(cnf, term={'mins': 5})) # ls[:20]
-
-# In[ ]:
-
-ping()
-
-
-# In[ ]:
-
-W3, cnf3 = sgd(W=W3.copy(), corp=toki, cf=update(cnf3, term={'mins': 5}), ) # ls[:20]
-
-
-# In[ ]:
-
-wd = DataFrame(W2, index=vc)
-wd.to_csv('cache/v2/n6_e1.csv')
-
-
-# In[ ]:
-
-wd.mean(axis=1).sort_values(ascending=True)
-
-
-# In[ ]:
-
-wd[10:200]
-
-
-# In[ ]:
-
-Series(cnfe.norms).plot()
-
-
-# In[ ]:
-
-for i, x in enumerate([-1, 1,6,8]):
-    print(i, x)
-
-
-# In[ ]:
-
-s
-
-
-# In[ ]:
-
-cnf2.norms[48000]
-
+# # Eval
 
 # In[ ]:
 
-plt.figure(figsize=(30, 10))
-gnrms = Series(cnfe.gradnorms)
-gnrms.plot()
-pd.rolling_mean(gnrms, 20).plot()
+Tokyo:Japan::Warsaw:*U.S.S.R.* (Poland)
+Philadelphia:Pennsylvania::Seattle:*AFL-CIO* (Washington)
+                
+- line profiler
+- create array
+- index with list
 
 
 # ## Update equation
@@ -2251,10 +1131,3 @@ pd.rolling_mean(gnrms, 20).plot()
 #          {\partial \boldsymbol v_{w_j}^{\prime T} \boldsymbol h}
 #          = \sigma(\boldsymbol v_{w_j}^{\prime T} \boldsymbol h) -t_j
 # $$
-
-# # Analyze word vectors
-
-# In[ ]:
-
-z
-

@@ -1,7 +1,9 @@
+from builtins import filter as ifilter
 from collections import namedtuple, OrderedDict, defaultdict
 from functools import reduce, partial
 from importlib import reload
 from itertools import repeat, islice  # , filterfalse, tee
+import itertools as it
 import numpy as np
 import pandas as pd
 from pandas import DataFrame
@@ -10,6 +12,7 @@ from os.path import join
 import os
 import re
 import site
+import sys
 import toolz.curried as z
 import time
 
@@ -197,10 +200,16 @@ def memoize(f):
     return memodict().__getitem__
 
 
-# def partition(pred, iterable):
-#     'https://docs.python.org/dev/library/itertools.html#itertools-recipes'
-#     t1, t2 = tee(iterable)
-#     return filterfalse(pred, t1), filter(pred, t2)
+def partition(pred, iterable):
+    'Use a predicate to partition entries into false entries and true entries'
+    # partition(is_odd, range(10)) --> 0 2 4 6 8   and  1 3 5 7 9
+    t1, t2 = it.tee(iterable)
+    return it.filterfalse(pred, t1), ifilter(pred, t2)
+
+
+def spr(*a, **k):
+    print(*a, **k)
+    sys.stdout.flush()
 
 
 # Phrase searching functions
