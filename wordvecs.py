@@ -143,7 +143,8 @@ def ns_grad(Wsub):
     N = getNall(Wsub)
     Wsub_grad = np.zeros(Wsub.shape)
 
-    for i, vout, label in zip(count(1), it.chain([vwo], negsamps), gen_labels(negsamps)):
+    for i, vout, label in zip(count(1), it.chain([vwo], negsamps),
+                              gen_labels(negsamps)):
         hgrad, vgrad = ns_loss_grads(h, vout, label)
         Wsub_grad[0, :N] += hgrad
         Wsub_grad[i, N:] += vgrad
@@ -180,8 +181,9 @@ def J(Wsub, loss=ns_loss):
     h, vwo, vwi_negs = get_vecs1(Wsub)
     return loss(h, vwo, vwi_negs)
 
-def check_grad_(W, i: int=None, j: int=None, eps=1e-6, J: 'Callable'=None):
-    "From eqn at http://ufldl.stanford.edu/tutorial/supervised/DebuggingGradientChecking/"
+def check_grad_(W, i: int=None, j: int=None, eps=1e-6, J: 'fn'=None):
+    """From eqn at http://ufldl.stanford.edu/tutorial/supervised
+    /DebuggingGradientChecking/"""
     Wneg, Wpos = W.copy(), W.copy()
     Wneg[i, j] -= eps
     Wpos[i, j] += eps
@@ -216,7 +218,7 @@ def mk_ns_loss_a(N):
         vwi_negs = Wsub[2:, N:]
         vwo_h = npa.dot(vwo, h)
         vwi_negs_h = npa.dot(vwi_negs, h)
-        return  -npa.log(siga(vwo_h)) - npa.sum(npa.log(siga(-vwi_negs_h)))
+        return -npa.log(siga(vwo_h)) - npa.sum(npa.log(siga(-vwi_negs_h)))
     return ns_loss_a
 
 mk_ns_grad_a = z.compose(grad, mk_ns_loss_a)
@@ -312,10 +314,12 @@ def neg_sampler_pd(xs, K, pow=.75):
     "Simplest, but slowest sampler using built-in pandas sample function"
     ug = unigram(xs, pow=pow)
     for seed in count():
-        yield ug.Word.sample(n=K, weights=ug.Prob, random_state=seed, replace=True)
+        yield ug.Word.sample(n=K, weights=ug.Prob, random_state=seed,
+                             replace=True)
         
         
-def neg_sampler_np(xs, K, cache_len=1000, use_seed=False, pow=.75, ret_type=np.ndarray):
+def neg_sampler_np(xs, K, cache_len=1000, use_seed=False, pow=.75,
+                   ret_type=np.ndarray):
     "Faster neg. sampler without the pandas overhead"
     ug = unigram(xs, pow=pow)
     p = ug.Prob.values / ug.Prob.sum()
@@ -332,7 +336,8 @@ def neg_sampler_np(xs, K, cache_len=1000, use_seed=False, pow=.75, ret_type=np.n
     agen = neg_sampler_np_()            
     if ret_type == list:
         return map(list, agen)
-    assert ret_type == np.ndarray, 'Only defined for type in {np.ndarray, list}'
+    assert ret_type == np.ndarray, ('Only defined for type '
+                                    'in {np.ndarray, list}')
     return agen
 
 
@@ -352,7 +357,8 @@ def neg_sampler_jit_pad(xs, K, pow=.75, ret_type=list, pad=0):
     }[ret_type]
     return sampler(cum_prob, K, pad=pad)
 
-def neg_sampler_inplace(xs, K, pow=.75, pad=0, ret_type=np.ndarray, seed=None):
+def neg_sampler_inplace(xs, K, pow=.75, pad=0, ret_type=np.ndarray,
+                        seed=None):
     use_seed = seed is not None and False
     seed = seed or 0
     cum_prob = cum_prob_uni(xs, pow=pow)
@@ -367,7 +373,8 @@ def neg_sampler_inplace(xs, K, pow=.75, pad=0, ret_type=np.ndarray, seed=None):
     return a, neg_sampler_jit_pad_arr_
 
 def neg_sampler_inplace_gen(xs, K, pow=.75, pad=0, ret_type=np.ndarray):
-    a, neg_sampler_jit_pad_arr_ = neg_sampler_inplace(xs, K, pow=pow, pad=pad)
+    a, neg_sampler_jit_pad_arr_ = neg_sampler_inplace(xs, K, pow=pow,
+                                                      pad=pad)
     for _ in it.repeat(None):
         neg_sampler_jit_pad_arr_(a)
         yield a[pad:].copy()
@@ -397,7 +404,8 @@ smtok = le.fit_transform(some_text)
 class NegSampler:
     """Container for the sampler generator functions.
     This keeps track of the number of samples $K$ and the padding."""
-    def __init__(self, sampler, toks, K=None, ret_type=None, pad=None, nxt=True, **kw):
+    def __init__(self, sampler, toks, K=None, ret_type=None, pad=None,
+                 nxt=True, **kw):
         if pad is not None:
             kw['pad'] = pad
         if ret_type is not None:
@@ -430,40 +438,42 @@ gen_pd =       NegSampler(neg_sampler_pd, smtok, 8)
 gen_npl =      NegSampler(neg_sampler_np, smtok, 8, ret_type=list)
 gen_npa =      NegSampler(neg_sampler_np, smtok, 8, ret_type=np.ndarray)
 gen_jitl =     NegSampler(neg_sampler_jit, smtok, 8, ret_type=list)
-gen_jitl_pad = NegSampler(neg_sampler_jit_pad, smtok, 8, ret_type=list, pad=2)
+gen_jitl_pad = NegSampler(neg_sampler_jit_pad, smtok, 8, ret_type=list,
+                          pad=2)
 gen_jita =     NegSampler(neg_sampler_jit, smtok, 8, ret_type=np.ndarray)
-gen_jita_pad = NegSampler(neg_sampler_jit_pad, smtok, 8, ret_type=np.ndarray, pad=2)
-
-
-# In[ ]:
-
-gen_jita_padi = NegSampler(neg_sampler_inplace_gen, smtok, 8, ret_type=np.ndarray, pad=2)
+gen_jita_pad = NegSampler(neg_sampler_jit_pad, smtok, 8,
+                          ret_type=np.ndarray, pad=2)
+gen_jita_padi = NegSampler(neg_sampler_inplace_gen, smtok, 8,
+                           ret_type=np.ndarray, pad=2)
 
 
 # In[ ]:
 
 run_n = lambda gen, n=10000: ilen(it.islice(gen, n))
-get_ipython().magic('timeit run_n(gen_pd, n=1000)')
-get_ipython().magic('timeit run_n(gen_npl)')
-get_ipython().magic('timeit run_n(gen_npa)')
-get_ipython().magic('timeit run_n(gen_jitl)')
-get_ipython().magic('timeit run_n(gen_jitl_pad)')
-get_ipython().magic('timeit run_n(gen_jita)')
-get_ipython().magic('timeit run_n(gen_jita_pad)')
-get_ipython().magic('timeit run_n(gen_jita_padi)')
+get_ipython().magic('timeit run_n(gen_pd, n=1000)  # 3.41 s per loop')
+get_ipython().magic('timeit run_n(gen_npl)         #    31.4 ms per loop')
+get_ipython().magic('timeit run_n(gen_npa)         #    19.1 ms per loop')
+get_ipython().magic('timeit run_n(gen_jitl)        #    18.6 ms per loop')
+get_ipython().magic('timeit run_n(gen_jitl_pad)    #    19.2 ms per loop')
+get_ipython().magic('timeit run_n(gen_jita)        #    14.7 ms per loop')
+get_ipython().magic('timeit run_n(gen_jita_pad)    #    19.2 ms per loop')
+get_ipython().magic('timeit run_n(gen_jita_padi)   #    20.9 ms per loop')
 
 
 # In[ ]:
 
 n = 100000
-csp = Series(Counter(x for xs in it.islice(gen_pd, n // 100) for x in xs))
+csp = Series(Counter(x for xs in it.islice(gen_pd, n // 100)
+                     for x in xs))
 csnp = Series(Counter(x for xs in it.islice(gen_npl, n) for x in xs))
-csj = Series(Counter(x for xs in it.islice(gen_jita_pad, n) for x in xs[2:]))
-cs_ip = Series(Counter(x for xs in it.islice(gen_jita_padi, n) for x in xs))
-# cs_ip = Series(Counter(x for _ in xrange(n) for x in inplace(a_) or a_[2:]))
+csj = Series(Counter(x for xs in it.islice(gen_jita_pad, n)
+                     for x in xs[2:]))
+cs_ip = Series(Counter(x for xs in it.islice(gen_jita_padi, n)
+                       for x in xs))
 
 ug = unigram(smtok, pow=.75)
-cts = DataFrame({'Numba': csj, 'Numpy': csnp, 'Pandas': csp, 'Inplace': cs_ip}).fillna(0)
+cts = DataFrame({'Numba': csj, 'Numpy': csnp, 'Pandas': csp,
+                 'Inplace': cs_ip}).fillna(0)
 probs = cts / cts.sum()
 probs['Probs'] = ug.Prob / ug.Prob.sum()
 
@@ -472,7 +482,8 @@ probs['Probs'] = ug.Prob / ug.Prob.sum()
 
 def plot_dist(xcol=None, subplt=None):
     plt.subplot(subplt)
-    probs.plot(x=xcol, y='Probs', ax=plt.gca(), kind='scatter', alpha=.25)
+    probs.plot(x=xcol, y='Probs', ax=plt.gca(), kind='scatter',
+               alpha=.25)
     _, xi = plt.xlim(None)
     _, yi = plt.ylim(0, None)
     end = min(xi, yi)
@@ -573,13 +584,15 @@ def sliding_window_ix_(xs, C=4):
 samp_toks = nr.randint(0, 1e6, size=100005)
 samp_toksl = list(samp_toks)
 list(sliding_window_jit(samp_toksl[:10], C=4))
-run_window = lambda f, toks=samp_toksl: [ut.ilen(xs) for xs in f(toks, C=4)]
+run_window = lambda f, toks=samp_toksl: [ut.ilen(xs)
+                                         for xs in f(toks, C=4)]
 
 
 # In[ ]:
 
 to_lst = lambda xs: [(c, list(ys)) for c, ys in xs]
-assert to_lst(sliding_window_ix_(samp_toks[:10], C=4)) == to_lst(sliding_window_jit_arr(samp_toks[:10], C=4))
+assert to_lst(sliding_window_ix_(samp_toks[:10], C=4)
+             ) == to_lst(sliding_window_jit_arr(samp_toks[:10], C=4))
 
 
 # In[ ]:
@@ -725,7 +738,8 @@ padded_updates = {grad_update_jit_pad}
 
 gen_npl = NegSampler(neg_sampler_np, tokl, K=cnf_.K, ret_type=list)
 numpy_opts = dict(ns_grad_=ns_grad, neg_sampler=gen_npl,
-                  sliding_window=sliding_window, grad_update=inner_update)
+                  sliding_window=sliding_window,
+                  grad_update=inner_update)
 
 ngsamp_pad = NegSampler(neg_sampler_jit_pad, tokl, cfp.K,
                         ret_type=np.ndarray, pad=2)
@@ -739,7 +753,8 @@ fast_opts = dict(ns_grad_=ns_grad_jit, neg_sampler=ngsamp_pad,
 # In[ ]:
 
 def sgd(W=None, corp=None, cf={}, ns_grad_=ns_grad, neg_sampler=None,
-        vc=None, sliding_window=sliding_window, grad_update=grad_update_jit_pad):
+        vc=None, sliding_window=sliding_window,
+        grad_update=grad_update_jit_pad):
     check_padding(neg_sampler, cf.K, grad_update)
     if not os.path.exists(cf.dir):
         os.mkdir(cf.dir)
@@ -775,7 +790,8 @@ def sgd(W=None, corp=None, cf={}, ns_grad_=ns_grad, neg_sampler=None,
     #     print(i, 'iters')
     return W, cf2
 
-_ = sgd(W=We.copy(), corp=tokl, cf=update(cnf_, term={'iters': 1000}), **fast_opts)
+_ = sgd(W=We.copy(), corp=tokl, cf=update(cnf_, term={'iters': 1000}),
+        **fast_opts)
 
 
 # In[ ]:
@@ -799,9 +815,10 @@ def mk_sgd_inplace(cf=None, sampler=None):
     looper = partial(loop, **kwa)
     return looper
 
-a, inplace_sampler = neg_sampler_inplace(toka, cfp.K, pow=.75, pad=cfp.pad, ret_type=np.ndarray, seed=2)
+a, inplace_sampler = (neg_sampler_inplace(
+        toka, cfp.K, pow=.75, pad=cfp.pad, ret_type=np.ndarray, seed=2))
 sgd_inplace = mk_sgd_inplace(cfp, sampler=inplace_sampler)
-# loop(w1, toka[:100], eta=cnf.eta, min_eta=cnf.min_eta, C=cnf.C, K=cnf.K, pad=2)
+
 w1 = We.copy()
 sgd_inplace(w1, toka[:100]); None
 
@@ -847,7 +864,8 @@ print('=> {:.2f}s'.format(t_numba))
 
 nr.seed(41)  # 182
 w2 = We.copy()
-(w2, _), t_np = timer(sgd)(W=w2, corp=tokl, cf=update(cnf_, term={}), **numpy_opts)
+(w2, _), t_np = timer(sgd)(W=w2, corp=tokl, cf=update(cnf_, term={}),
+                           **numpy_opts)
 print('Numpy score: {}'.format(wut.score_wv(w2, vc)))
 print('Numpy wordvec norm: {:.2f}'.format(norm(w2)))
 print('=> {:.2f}s'.format(t_np))
@@ -863,7 +881,7 @@ assert gensim.models.word2vec.FAST_VERSION == 1
 gparams = ut.to_gensim_params(cnf_)
 
 def gensim_eval(mod):
-    ans = mod.accuracy('src/questions-words.txt')  # , restrict_vocab=10000
+    ans = mod.accuracy('src/questions-words.txt')
     sect = [d for d in ans if d['section'] == 'total']
     return sum([1 for d in sect for _ in d['correct']])
 
@@ -886,7 +904,8 @@ def gensim_eval(mod):
 # In[ ]:
 
 # %time 
-gen_fast, t_gen = timer(Word2Vec)(brown.sents(), seed=42, iter=1, workers=1, **gparams)
+gen_fast, t_gen = timer(Word2Vec)(brown.sents(), seed=42, iter=1,
+                                  workers=1, **gparams)
 print('Gensim score: {}'.format(gensim_eval(gen_fast)))
 print('Gensim wordvec norm: {:.2f}'.format(norm(gen_fast.syn0)))
 print('=> {:.2f}s'.format(t_gen))
@@ -896,7 +915,8 @@ print('=> {:.2f}s'.format(t_gen))
 
 # In[ ]:
 
-gen_fast2, t_gen2 = timer(Word2Vec)(brown.sents(), seed=42, iter=2, workers=1, **gparams)
+gen_fast2, t_gen2 = timer(Word2Vec)(brown.sents(), seed=42,
+                                    iter=2, workers=1, **gparams)
 print('Gensim score: {}'.format(gensim_eval(gen_fast2)))
 print('Gensim wordvec norm: {:.2f}'.format(norm(gen_fast2.syn0)))
 print('=> {:.2f}s'.format(t_gen2))
@@ -908,7 +928,8 @@ print('=> {:.2f}s'.format(t_gen2))
 
 print('Row / column')
 ts = Series(dict(Gensim=t_gen, Gensim2=t_gen2, Numba=t_numba, Numpy=t_np))
-DataFrame(ts[:, None] / ts[:, None].T, index=ts.index, columns=ts.index).apply(mc('round', 2))
+DataFrame(ts[:, None] / ts[:, None].T, index=ts.index,
+          columns=ts.index).apply(mc('round', 2))
 
 
 # ## Conclusion
@@ -919,4 +940,14 @@ DataFrame(ts[:, None] / ts[:, None].T, index=ts.index, columns=ts.index).apply(m
 # In[ ]:
 
 
+
+
+# In[ ]:
+
+Tokyo:Japan::Warsaw:*U.S.S.R.* (Poland)
+Philadelphia:Pennsylvania::Seattle:*AFL-CIO* (Washington)
+                
+- line profiler
+- create array
+- index with list
 
