@@ -1,94 +1,13 @@
 from builtins import filter as ifilter
-from collections import namedtuple, OrderedDict, defaultdict
-from functools import reduce, partial
-from importlib import reload
+from functools import partial
 from itertools import repeat, islice  # , filterfalse, tee
 import itertools as it
-import numpy as np
 import pandas as pd
 from pandas import DataFrame
-import operator as op
-from os.path import join
-import os
 import re
-import site
 import sys
 import toolz.curried as z
 import time
-
-
-# Text handling
-Chapter = namedtuple('Chapter', 'num title text')
-bookpat_re = re.compile(r'''\A(?P<title>.+)
-\n*
-(?:(?:.+\n+)+?)
-(?P<body>
-    (Chapter\ 1)
-    \n+
-    (.+\n*)+
-)''', re.VERBOSE)
-
-chappat_re = re.compile(r'''(Chapter (\d+)\n+((?:.+\n+)+))+''')
-chapsep_re = re.compile(r'Chapter (\d+)\n(.+)\n+')
-
-
-class Book(object):
-    def __init__(self, title, chapters: {int: Chapter}):
-        self.chapters = chapters
-        self.title = title
-        self.txts = OrderedDict()
-        for n, chap in sorted(chapters.items()):
-            setattr(self, 't{}'.format(n), chap.text)
-            self.txts[n] = chap.text
-        txt = reduce(op.add, self.txts.values())
-        self.txt = clean_text(txt)
-
-
-class BookSeries(object):
-    def __init__(self, n=7):
-        bks = {i: parsebook(i, vb=False) for i in range(1, n + 1)}
-
-        self.txts = OrderedDict()
-        for n, bk in sorted(bks.items()):
-            setattr(self, 'b{}'.format(n), bk.txt)
-            self.txts[n] = bk.txt
-        txt = reduce(op.add, self.txts.values())
-        self.txt = clean_text(txt)
-
-
-def parsebook(fn="src/txt/hp1.txt", vb=False):
-    p = print if vb else (lambda *x, **y: None)
-    if isinstance(fn, int):
-        fn = "src/txt/hp{}.txt".format(fn)
-    p('Reading {}'.format(fn))
-    with open(fn, 'rb') as f:
-        txt = f.read().decode("utf-8-sig")
-
-    gd = bookpat_re.search(txt).groupdict()
-
-    booktitle = gd['title']
-    body = gd['body']
-
-    chs = chapsep_re.split(body)[1:]
-    book = {int(chnum): Chapter(int(chnum), title, text) for chnum, title, text in z.partition(3, chs)}
-    return Book(booktitle, book)
-
-
-def clean_text(t):
-    reps = {
-        '’': "'",
-        '‘': "'",
-        '“': '"',
-        '”': '"',
-        '\xad': '',
-        '—': '-',
-       }
-
-    def rep(s, frto):
-        fr, to = frto
-        return s.replace(fr, to)
-    t = reduce(rep, reps.items(), t)
-    return t
 
 
 def mod_axis(df, f, axis=0):
@@ -98,44 +17,6 @@ def mod_axis(df, f, axis=0):
     else:
         df.columns = f(df.columns)
     return df
-
-
-def pvalue(x, xs, side=4):
-    "side: 1=>low p-value, 2=>hi, 3=>min(lo,hi), 4=> min(lo,hi) * 2"
-    l = np.sum(x <= np.array(xs))
-    r = np.sum(x >= np.array(xs))
-    np1 = len(xs) + 1
-    lp = (1 + l) / np1
-    rp = (1 + r) / np1
-
-    if side == 1: return lp
-    elif side == 2: return rp
-    elif side == 3: return min(lp, rp)
-    elif side == 4: return min(lp, rp) * 2
-    else: raise ValueError('`side` arg should be ∈ 1..4')
-
-
-# Graph
-def dedupe_wrd_repr(s):
-    d = {}
-    dfd = defaultdict(int)
-    for tok in s:
-        dfd[tok.orth_] += 1
-        n = dfd[tok.orth_]
-        # print(tok.i, tok, n)
-        if n > 1:
-            d['{}[{}]'.format(tok.orth_, n)] = tok.i
-        else:
-            d[tok.orth_] = tok.i
-    return {v: k for k, v in d.items()}
-
-def add_edge(src, dst, G, reprdct=None):
-    """Since this is a tree, append an underscore for duplicate
-    destination nodes"""
-    G.add_edge(reprdct[src.i], reprdct[dst.i])
-
-def add_int_edge(src, dst, G, **_):
-    G.add_edge(src.i, dst.i)
 
 
 def timeloop(it, secs=None, mins=None, iters=None):
@@ -257,31 +138,7 @@ def get_multi_case(ks, txt, thresh=.9):
         for diffcase in set(find_icase(k))}
 
 
-# Gensim fast/slow mode
-[sdir] = site.getsitepackages()
-gensim_dir = join(sdir, 'gensim/models')
-fast_file = join(gensim_dir, 'word2vec_fast.py')
-slow_file = join(gensim_dir, 'word2vec_slow.py')
-wv_file = join(gensim_dir, 'word2vec.py')
-
-
-def mk_gensim_sym(slow=False):
-    dst = slow_file if slow else fast_file
-    if os.path.islink(wv_file):
-        os.remove(wv_file)
-
-    elif os.path.exists(wv_file):
-        raise Exception('{} not a symlink!'.format(wv_file))
-    os.symlink(dst, wv_file)
-    #print(dst)
-    return True
-
-
-def reset_gensim(slow=False, gensim=None):
-    mk_gensim_sym(slow=slow)
-    reload(gensim.models.word2vec)
-
-
+# Gensim
 def to_gensim_params(cnf, **kw):
     gparams = dict(
         size=cnf.N, # 80, #

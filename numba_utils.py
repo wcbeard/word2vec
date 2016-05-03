@@ -141,18 +141,6 @@ remove_dupes_ = lambda negsamps, w, c: np.array([w, c] + [n for n in negsamps[2:
 
 # Array funcs
 @njit
-def concat_jit(arr, *xs):
-    X = len(xs)
-    A = len(arr)
-    a2 = np.empty(A + X, dtype=np.uint32)
-    for i in xrange(X):
-        a2[i] = xs[i]
-
-    for i in xrange(X, A + X):
-        a2[i] = arr[i - X]
-    return a2
-
-@njit
 def concat(a, b):
     na = len(a)
     n = na + len(b)
@@ -172,14 +160,6 @@ def count_occ(arr, x, start=0):
         if x == arr[i]:
             ct += 1
     return ct
-
-
-@njit
-def contains(arr, x):
-    for e in arr:
-        if x == e:
-            return True
-    return False
 
 
 #Sliding window

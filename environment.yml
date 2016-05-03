@@ -16,7 +16,7 @@ dependencies:
 - nltk
 - pandas
 - numexpr
-- gensim
+- gensim=0.12.4
 - seaborn
 - joblib
 - statsmodels

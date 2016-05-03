@@ -2,13 +2,11 @@ import builtins
 from collections import Counter, OrderedDict
 from functools import wraps
 from itertools import repeat, islice, count
-from sklearn.feature_extraction import DictVectorizer
 import numpy as np
 import numpy.random as nr
 from numpy.linalg import norm
 from operator import itemgetter as itg
 from pandas import Series, DataFrame, Index
-from typing import Union, Iterable, Dict, List
 from numba import jit
 
 import toolz.curried as z
@@ -47,134 +45,7 @@ def init_w(V, N, seed=None, test=False):
     return Cat.join(W1_, W2_)
 
 
-class WordVectorizer(DictVectorizer):
-    """Given string, convert to count dict of count 1.
-
-    """
-    def fit(self, X, y=None, transform=True):
-        if transform:
-            X = map(self.todict, X)
-            if y:
-                y = map(self.todict, y)
-        return super().fit(list(X) + [self.todict(UNKNOWN)], y=y)
-
-    def get_(self, wd: str):
-        try:
-            return self.vocabulary_[wd]
-        except IndexError:
-            return self.vocabulary_[UNKNOWN]
-
-    def get(self, wds):
-        if isinstance(wds, str):
-            return self.get_(wds)
-        return map(self.get_, wds)
-
-    def wds(self, ids):
-        vc = self.get_feature_names()
-        return map(vc.__getitem__, ids)
-
-    def transform(self, X: Union[str, List[str]], y=None):
-        dct_unk = z.compose(self.to_unk, self.todict)
-        if isinstance(X, str):
-            x = dct_unk(X)
-        else:
-            x = map(dct_unk, X)
-        return super().transform(x, y=y)
-
-    def to_unk(self, dct: Dict[str, int]) -> Dict[str, int]:
-        missing = dct.keys() - self.vocabulary_.keys()
-        if missing:
-            dct[UNKNOWN] = dct.get(UNKNOWN, 0)
-            for m in missing:
-                dct[UNKNOWN] += dct.pop(m)
-        return dct
-
-    def inverse_transform(self, X, dict_type=dict, transform=True):
-        ret = super().inverse_transform(X, dict_type=dict_type)
-        if not transform:
-            return ret
-        return map(self.fromdict, [ret])[0]
-
-    @staticmethod
-    def todict(s: Union[str, Iterable[str]]) -> Dict[str, int]:
-        if isinstance(s, str):
-            return {s: 1}
-        return dict(zip(s, repeat(1)))
-
-    @staticmethod
-    def fromdict(ds: Iterable[Dict[str, int]]) -> List[str]:
-        "[{a: 1}, {b: 1}] -> [a, b]"
-        assert all(len(d) == 1 for d in ds), ds
-        return [next(iter(d)) for d in ds]
-
-
-# Sliding windows
-def get_window(lst: List[str], C:int=4):
-    for i, wd in enumerate(lst[C:-C], C):
-        st = i - C
-        end = i + C
-        yield lst[st:i], wd, lst[i + 1:end + 1]
-
-
-def get_win(corp: [str], i: int, C: int=4) -> (str, [str]):
-    """Get `C` preceding and `C` following words, along with word i
-    i: C..L-C
-    """
-    L = len(corp)
-    assert i < L - C, 'Must be followed by {} words'.format(C)
-    assert i >= C, 'Must be preceded by {} words'.format(C)
-    # corp[i - C:i], corp[i], corp[i + 1:i+C+1]
-    if isinstance(corp, list):
-        return corp[i], corp[i - C:i] + corp[i + 1:i+C+1]
-    else:
-        return corp[i], np.append(corp[i - C:i], corp[i + 1:i+C+1])
-
-
-
-def get_rand_wins(corp, C=4, seed=None, n=None):
-    if seed is not None:
-        nr.seed(seed)
-    L = len(corp)
-    ilo = C
-    ihi = L - C
-
-    def get_rand_wins_():
-        while 1:
-            i = nr.randint(ilo, ihi)
-            yield get_win(corp, i, C=C)
-
-    if n is not None:
-        return islice(get_rand_wins_(), n)
-    return get_rand_wins_()
-
-
-def get_wins(i, corpus, winlen=4, cat=True):
-    "get_wins(2, [0, 1, 2, 3, 4], winlen=2, cat=0) == ([0, 1], [3, 4])"
-    lix = max(i - winlen, 0)
-    rix = min(i + 1 + winlen, len(corpus))
-    lwin, rwin = corpus[lix:i], corpus[i+1:rix]
-    if cat:
-        return list(lwin) + list(rwin)
-    return lwin, rwin
-
-
-def inspect_freq_thresh(txt: [str]):
-    """Find `thresh` for subsampling. Choose it to be the `Freq` for
-    the least frequent word to be decreased.
-    """
-    vcs = Series(Counter(txt)).sort_values(ascending=0)
-
-    freqdf = ((vcs.sort_values(ascending=True).cumsum()
-               / vcs.sum() * 100).reset_index(drop=0)
-              .rename(columns={'index': 'Word'}))  # .round(1)
-    freqdf['Count'] = freqdf.Word.map(vcs.get)
-    freqdf['Freq'] = freqdf.Count / freqdf.Count.sum()
-    freqdf = freqdf.sort_values('Count', ascending=False).reset_index(drop=1)
-    return freqdf
-
-
 # Closest word
-
 def combine(plus=[], minus=[], W=None, wd2row=None):
     ixs = np.array([wd2row[p] for p in plus + minus])
     wa = W.values if isinstance(W, DataFrame) else W
@@ -295,6 +166,7 @@ def even(x):
     if x % 2:
         raise Invalid('x must be an even number')
     return x
+
 
 Num = Any(float, int)
 Dict = lambda x: Any(x, {})
