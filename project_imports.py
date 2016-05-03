@@ -37,15 +37,15 @@ def listify(f):
     return wrapper
 
 
-map = listify(builtins.map)
-range = listify(builtins.range)
-filter = listify(builtins.filter)
-zip = listify(builtins.zip)
+# map = listify(builtins.map)
+# range = listify(builtins.range)
+# filter = listify(builtins.filter)
+# zip = listify(builtins.zip)
 
-imap = builtins.map
-xrange = builtins.range
-ifilter = builtins.filter
-izip = builtins.zip
+# imap = builtins.map
+# xrange = builtins.range
+# ifilter = builtins.filter
+# izip = builtins.zip
 
 Series.__matmul__ = Series.dot
 DataFrame.__matmul__ = DataFrame.dot
