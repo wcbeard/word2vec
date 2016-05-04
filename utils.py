@@ -1,5 +1,5 @@
 from builtins import filter as ifilter
-from functools import partial
+from functools import partial, wraps
 from itertools import repeat, islice  # , filterfalse, tee
 import itertools as it
 import pandas as pd
@@ -29,6 +29,16 @@ def timeloop(it, secs=None, mins=None, iters=None):
         yield x
         if (i >= iters) or (time.time() - start > secs):
             raise StopIteration
+
+
+def timer(f):
+    @wraps(f)
+    def tf(*a, **k):
+        t1 = time.clock()
+        res = f(*a, **k)
+        t2 = time.clock()
+        return res, t2 - t1
+    return tf
 
 
 class AttrDict(dict):

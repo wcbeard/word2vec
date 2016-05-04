@@ -151,6 +151,38 @@ def get_subsample(txt, thresh=.001) -> (['keep'], ['drop']):
     return txt[~drop], txt[drop]
 
 
+# Negative sampler
+class NegSampler:
+    """Container for the sampler generator functions.
+    This keeps track of the number of samples $K$ and the padding."""
+    def __init__(self, sampler, toks, K=None, ret_type=None, pad=None,
+                 nxt=True, **kw):
+        if pad is not None:
+            kw['pad'] = pad
+        if ret_type is not None:
+            kw['ret_type'] = ret_type
+
+        self.sampler = sampler(toks, K, **kw)
+        if nxt:
+            a = next(self.sampler)
+            if ret_type:
+                assert isinstance(a, ret_type)
+        self.toks = toks
+        self.K = K
+        self.ret_type = ret_type
+        self.pad = pad or 0
+
+    def __iter__(self):
+        return self.sampler
+
+    def __next__(self):
+        return next(self.sampler)
+
+    def __repr__(self):
+        return ('NegSampler(pad={pad}, K={K}, type={ret_type.__name__})'
+                .format(pad=self.pad, K=self.K, ret_type=self.ret_type))
+
+
 # Config helpers
 def orig_type(f):
     return wraps(f)(lambda x: type(x)(f(x)))
