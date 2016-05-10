@@ -1,13 +1,14 @@
+import itertools as it
+import re
+import sys
+import time
 from builtins import filter as ifilter
 from functools import partial, wraps
 from itertools import repeat, islice  # , filterfalse, tee
-import itertools as it
+
 import pandas as pd
-from pandas import DataFrame
-import re
-import sys
 import toolz.curried as z
-import time
+from pandas import DataFrame
 
 
 def mod_axis(df, f, axis=0):
